@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Speaker } from "@/types";
 
 interface SpeakerEditorProps {
@@ -50,6 +51,11 @@ export function SpeakerEditor({ speakers, onRename }: SpeakerEditorProps) {
                   setSavingSpeakerId(speaker.speaker_id);
                   try {
                     await onRename(speaker.speaker_id, draft.trim());
+                  } catch (error: unknown) {
+                    console.error("Failed to rename speaker:", error);
+                    toast.error("Failed to rename speaker", {
+                      description: error instanceof Error ? error.message : String(error),
+                    });
                   } finally {
                     setSavingSpeakerId(null);
                   }

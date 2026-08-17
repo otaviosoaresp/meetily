@@ -348,6 +348,48 @@ export function useDownloadProgressToast() {
     };
   }, [updateDownload, cleanupDownload]);
 
+  // Listen to speaker diarization model download events
+  useEffect(() => {
+    const unlisten = listen<{
+      model: string;
+      progress: number;
+      downloaded_mb?: number;
+      total_mb?: number;
+      speed_mbps?: number;
+      status: string;
+      error?: string;
+    }>('diarization-model-download-progress', (event) => {
+      const { model, progress, downloaded_mb, total_mb, speed_mbps, status, error } = event.payload;
+
+      const downloadData: DownloadProgress = {
+        modelName: model,
+        displayName: 'Speaker Recognition Model',
+        progress: progress ?? 0,
+        downloadedMb: downloaded_mb ?? 0,
+        totalMb: total_mb ?? 0,
+        speedMbps: speed_mbps ?? 0,
+        status: status === 'completed' || progress >= 100
+          ? 'completed'
+          : status === 'error'
+            ? 'error'
+            : 'downloading',
+        error: status === 'error' ? categorizeError(error || 'Download failed') : undefined,
+      };
+
+      updateDownload(model, downloadData);
+
+      if (downloadData.status === 'completed') {
+        cleanupDownload(model, 4000);  // 3s toast + 1s buffer
+      } else if (downloadData.status === 'error') {
+        cleanupDownload(model, 11000); // 10s toast + 1s buffer
+      }
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [updateDownload, cleanupDownload]);
+
   return { downloads };
 }
 

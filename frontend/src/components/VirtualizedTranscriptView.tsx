@@ -8,6 +8,7 @@ import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import { Speaker, TranscriptSegmentData } from "@/types";
 
 export interface VirtualizedTranscriptViewProps {
@@ -122,7 +123,12 @@ const TranscriptSegment = memo(function TranscriptSegment({
                                 const nextSpeakerId = event.target.value === ''
                                     ? null
                                     : Number(event.target.value);
-                                void onSpeakerChange(id, nextSpeakerId);
+                                onSpeakerChange(id, nextSpeakerId).catch((error: unknown) => {
+                                    console.error('Failed to reassign transcript speaker:', error);
+                                    toast.error('Failed to reassign speaker', {
+                                        description: error instanceof Error ? error.message : String(error),
+                                    });
+                                });
                             }}
                             aria-label="Reassign transcript speaker"
                         >

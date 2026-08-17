@@ -962,9 +962,9 @@ impl AudioPipeline {
             );
 
             let speaker_id = if device_type == DeviceType::System {
-                self.speaker_diarizer
-                    .as_mut()
-                    .and_then(|diarizer| diarizer.identify(&segment.samples, 16_000))
+                self.speaker_diarizer.as_mut().and_then(|diarizer| {
+                    tokio::task::block_in_place(|| diarizer.identify(&segment.samples, 16_000))
+                })
             } else {
                 None
             };

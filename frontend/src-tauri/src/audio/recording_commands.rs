@@ -114,6 +114,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     }
     info!("✅ Transcription model validation passed");
 
+    super::diarization::ensure_model_available(&app);
+
     // Async-first approach - no more blocking operations!
     info!("🚀 Starting async recording initialization");
 
@@ -370,6 +372,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         return Err(validation_error);
     }
     info!("✅ Transcription model validation passed");
+
+    super::diarization::ensure_model_available(&app);
 
     // Parse devices
     let mic_device = if let Some(ref name) = mic_device_name {

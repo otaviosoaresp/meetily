@@ -167,6 +167,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         text: t.text,
         timestamp: t.timestamp,
         source: (t as { source?: string }).source,
+        speaker_id: (t as { speaker_id?: number }).speaker_id,
         sequence_id: t.sequenceId || index,
         chunk_start_time: (t as any).chunk_start_time,
         is_partial: (t as any).is_partial || false,

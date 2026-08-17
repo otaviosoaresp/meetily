@@ -72,19 +72,23 @@ impl TranscriptsRepository {
             }
         }
 
-        for segment in transcripts {
-            if let Some(speaker_id) = segment.speaker_id {
-                sqlx::query(
-                    "INSERT OR IGNORE INTO meeting_speakers (meeting_id, speaker_id, name, created_at, updated_at)
-                     VALUES (?, ?, NULL, ?, ?)",
-                )
-                .bind(&meeting_id)
-                .bind(speaker_id)
-                .bind(now)
-                .bind(now)
-                .execute(&mut *transaction)
-                .await?;
-            }
+        let mut speaker_ids: Vec<i64> = transcripts
+            .iter()
+            .filter_map(|segment| segment.speaker_id)
+            .collect();
+        speaker_ids.sort_unstable();
+        speaker_ids.dedup();
+        for speaker_id in speaker_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO meeting_speakers (meeting_id, speaker_id, name, created_at, updated_at)
+                 VALUES (?, ?, NULL, ?, ?)",
+            )
+            .bind(&meeting_id)
+            .bind(speaker_id)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
         }
 
         info!(

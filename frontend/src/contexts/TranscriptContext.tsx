@@ -308,6 +308,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             text: update.text,
             timestamp: update.timestamp,
             source: update.source,
+            speaker_id: update.speaker_id,
             sequence_id: update.sequence_id,
             chunk_start_time: update.chunk_start_time,
             is_partial: update.is_partial,
@@ -378,6 +379,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             text: segment.text,
             timestamp: segment.display_time, // Use display_time for UI
             source: segment.source,
+            speaker_id: segment.speaker_id,
             sequence_id: segment.sequence_id,
             chunk_start_time: segment.audio_start_time,
             is_partial: false, // History segments are always final
@@ -420,6 +422,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       text: update.text,
       timestamp: update.timestamp,
       source: update.source,
+      speaker_id: update.speaker_id,
       sequence_id: update.sequence_id || 0,
       chunk_start_time: update.chunk_start_time,
       is_partial: update.is_partial,

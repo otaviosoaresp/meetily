@@ -9,7 +9,7 @@ use crate::{
         models::MeetingModel,
         repositories::{
             meeting::MeetingsRepository, setting::SettingsRepository,
-            transcript::TranscriptsRepository,
+            speaker::SpeakersRepository, transcript::TranscriptsRepository,
         },
     },
     state::AppState,
@@ -139,6 +139,8 @@ pub struct MeetingTranscript {
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_id: Option<i64>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -158,6 +160,12 @@ pub struct PaginatedTranscriptsResponse {
     pub transcripts: Vec<MeetingTranscript>,
     pub total_count: i64,
     pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Speaker {
+    pub speaker_id: i64,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -192,6 +200,8 @@ pub struct TranscriptSegment {
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -883,6 +893,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
                     source: t.source,
+                    speaker_id: t.speaker_id,
                 })
                 .collect::<Vec<_>>();
 
@@ -928,6 +939,72 @@ pub async fn api_save_meeting_title<R: Runtime>(
             log_error!("Failed to update meeting {}", e);
             Err(format!("Failed to update meeting: {}", e))
         }
+    }
+}
+
+#[tauri::command]
+pub async fn api_get_meeting_speakers<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Vec<Speaker>, String> {
+    SpeakersRepository::list(state.db_manager.pool(), &meeting_id)
+        .await
+        .map(|speakers| {
+            speakers
+                .into_iter()
+                .map(|speaker| Speaker {
+                    speaker_id: speaker.speaker_id,
+                    name: speaker.name,
+                })
+                .collect()
+        })
+        .map_err(|error| format!("Failed to load meeting speakers: {error}"))
+}
+
+#[tauri::command]
+pub async fn api_rename_speaker<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    speaker_id: i64,
+    name: String,
+) -> Result<Speaker, String> {
+    SpeakersRepository::rename(
+        state.db_manager.pool(),
+        &meeting_id,
+        speaker_id,
+        Some(name),
+    )
+    .await
+    .map(|speaker| Speaker {
+        speaker_id: speaker.speaker_id,
+        name: speaker.name,
+    })
+    .map_err(|error| format!("Failed to rename speaker: {error}"))
+}
+
+#[tauri::command]
+pub async fn api_reassign_transcript_speaker<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    transcript_id: String,
+    speaker_id: Option<i64>,
+) -> Result<(), String> {
+    let updated = SpeakersRepository::reassign_transcript(
+        state.db_manager.pool(),
+        &meeting_id,
+        &transcript_id,
+        speaker_id,
+    )
+    .await
+    .map_err(|error| format!("Failed to reassign transcript speaker: {error}"))?;
+
+    if updated {
+        Ok(())
+    } else {
+        Err("Only system-channel transcript segments can be reassigned".to_string())
     }
 }
 

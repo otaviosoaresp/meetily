@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -65,6 +66,7 @@ impl RecordingManager {
         microphone_device: Option<Arc<AudioDevice>>,
         system_device: Option<Arc<AudioDevice>>,
         auto_save: bool,
+        diarization_model_path: Option<PathBuf>,
     ) -> Result<mpsc::UnboundedReceiver<AudioChunk>> {
         info!("Starting recording manager (auto_save: {})", auto_save);
 
@@ -116,6 +118,7 @@ impl RecordingManager {
             mic_kind,
             sys_name,
             sys_kind,
+            diarization_model_path,
         )?;
 
         // Give the pipeline a moment to fully initialize before starting streams
@@ -186,7 +189,7 @@ impl RecordingManager {
             }
 
             // Start recording with selected devices and auto_save setting
-            self.start_recording(microphone_device, system_device, auto_save).await
+            self.start_recording(microphone_device, system_device, auto_save, None).await
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -221,7 +224,7 @@ impl RecordingManager {
                 return Err(anyhow::anyhow!("No microphone device available"));
             }
 
-            self.start_recording(microphone_device, system_device, auto_save).await
+            self.start_recording(microphone_device, system_device, auto_save, None).await
         }
     }
 

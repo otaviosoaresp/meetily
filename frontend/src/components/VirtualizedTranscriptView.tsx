@@ -8,7 +8,7 @@ import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
-import { TranscriptSegmentData } from "@/types";
+import { Speaker, TranscriptSegmentData } from "@/types";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -34,6 +34,8 @@ export interface VirtualizedTranscriptViewProps {
     totalCount?: number;
     loadedCount?: number;
     onLoadMore?: () => void;
+    speakers?: Speaker[];
+    onSpeakerChange?: (segmentId: string, speakerId: number | null) => Promise<void>;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -70,6 +72,9 @@ const TranscriptSegment = memo(function TranscriptSegment({
     text,
     source,
     confidence,
+    speakerId,
+    speakers,
+    onSpeakerChange,
     isStreaming,
     showConfidence,
 }: {
@@ -78,11 +83,17 @@ const TranscriptSegment = memo(function TranscriptSegment({
     text: string;
     source?: string;
     confidence?: number;
+    speakerId?: number;
+    speakers?: Speaker[];
+    onSpeakerChange?: (segmentId: string, speakerId: number | null) => Promise<void>;
     isStreaming: boolean;
     showConfidence: boolean;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
-    const speakerLabel = source && source !== 'Audio' ? source : null;
+    const speakerName = speakers?.find(speaker => speaker.speaker_id === speakerId)?.name;
+    const speakerLabel = source === 'Outros' && speakerId !== undefined
+        ? speakerName || `Outros ${speakerId + 1}`
+        : source && source !== 'Audio' ? source : null;
     const speakerLabelClass = speakerLabel === 'Você'
         ? 'bg-blue-100 text-blue-700'
         : 'bg-gray-100 text-gray-600';
@@ -103,11 +114,33 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     </TooltipContent>
                 </Tooltip>
                 <div className="flex-1">
-                    {speakerLabel && (
+                    {speakerLabel && onSpeakerChange && source === 'Outros' ? (
+                        <select
+                            className={`mb-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${speakerLabelClass}`}
+                            value={speakerId ?? ''}
+                            onChange={(event) => {
+                                const nextSpeakerId = event.target.value === ''
+                                    ? null
+                                    : Number(event.target.value);
+                                void onSpeakerChange(id, nextSpeakerId);
+                            }}
+                            aria-label="Reassign transcript speaker"
+                        >
+                            <option value="">Outros</option>
+                            {speakers?.map(speaker => (
+                                <option key={speaker.speaker_id} value={speaker.speaker_id}>
+                                    {speaker.name || `Outros ${speaker.speaker_id + 1}`}
+                                </option>
+                            ))}
+                            {speakerId !== undefined && !speakers?.some(speaker => speaker.speaker_id === speakerId) && (
+                                <option value={speakerId}>{speakerLabel}</option>
+                            )}
+                        </select>
+                    ) : speakerLabel ? (
                         <span className={`mb-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${speakerLabelClass}`}>
                             {speakerLabel}
                         </span>
-                    )}
+                    ) : null}
                     {isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
                             <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
@@ -135,6 +168,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     totalCount = 0,
     loadedCount = 0,
     onLoadMore,
+    speakers,
+    onSpeakerChange,
 }) => {
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -305,6 +340,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         source={segment.source}
+                                        speakerId={segment.speakerId}
+                                        speakers={speakers}
+                                        onSpeakerChange={onSpeakerChange}
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
@@ -362,6 +400,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         source={segment.source}
+                                        speakerId={segment.speakerId}
+                                        speakers={speakers}
+                                        onSpeakerChange={onSpeakerChange}
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}

@@ -28,6 +28,8 @@ pub struct TranscriptSegment {
     pub sequence_id: u64,
     #[serde(default = "default_transcript_source")]
     pub source: String,
+    #[serde(default)]
+    pub speaker_id: Option<u32>,
 }
 
 /// Meeting metadata structure
@@ -136,6 +138,7 @@ impl RecordingSaver {
             confidence: 1.0,
             sequence_id: 0,
             source: "Audio".to_string(),
+            speaker_id: None,
         };
         self.add_transcript_segment(segment);
     }
@@ -524,6 +527,7 @@ mod tests {
             confidence: 0.9,
             sequence_id: 1,
             source: "Você".to_string(),
+            speaker_id: None,
         };
         let json = serde_json::to_string(&segment).expect("serialize");
         let reloaded: TranscriptSegment = serde_json::from_str(&json).expect("deserialize");

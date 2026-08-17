@@ -9,6 +9,7 @@ export interface Transcript {
   text: string;
   timestamp: string; // Wall-clock time (e.g., "14:30:05")
   source?: string;
+  speaker_id?: number;
   sequence_id?: number;
   chunk_start_time?: number; // Legacy field
   is_partial?: boolean;
@@ -23,6 +24,7 @@ export interface TranscriptUpdate {
   text: string;
   timestamp: string; // Wall-clock time for reference
   source: string;
+  speaker_id?: number;
   sequence_id: number;
   chunk_start_time: number; // Legacy field
   is_partial: boolean;
@@ -101,6 +103,11 @@ export interface PaginatedTranscriptsResponse {
   has_more: boolean;
 }
 
+export interface Speaker {
+  speaker_id: number;
+  name?: string;
+}
+
 // Transcript segment data for virtualized display
 export interface TranscriptSegmentData {
   id: string;
@@ -108,5 +115,6 @@ export interface TranscriptSegmentData {
   endTime?: number; // audio_end_time in seconds
   text: string;
   source?: string;
+  speakerId?: number;
   confidence?: number;
 }

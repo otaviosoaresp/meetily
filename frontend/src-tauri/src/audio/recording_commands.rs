@@ -10,6 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::task::JoinHandle;
 
@@ -44,6 +45,13 @@ static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
+
+fn diarization_model_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|app_data| super::diarization::embedding_model_path(&app_data.join("models")))
+}
 
 // ============================================================================
 // PUBLIC TYPES
@@ -234,7 +242,12 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
-        .start_recording(microphone_device, system_device, auto_save)
+        .start_recording(
+            microphone_device,
+            system_device,
+            auto_save,
+            diarization_model_path(&app),
+        )
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -280,6 +293,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                     } else {
                         update.source.clone()
                     },
+                    speaker_id: update.speaker_id,
                 };
 
                 // Save to recording manager
@@ -410,7 +424,12 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
-        .start_recording(mic_device, system_device, auto_save)
+        .start_recording(
+            mic_device,
+            system_device,
+            auto_save,
+            diarization_model_path(&app),
+        )
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -456,6 +475,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
                     } else {
                         update.source.clone()
                     },
+                    speaker_id: update.speaker_id,
                 };
 
                 // Save to recording manager

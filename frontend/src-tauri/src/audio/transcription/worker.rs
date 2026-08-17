@@ -29,6 +29,8 @@ pub struct TranscriptUpdate {
     pub text: String,
     pub timestamp: String, // Wall-clock time for reference (e.g., "14:30:05")
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_id: Option<u32>,
     pub sequence_id: u64,
     pub chunk_start_time: f64, // Legacy field, kept for compatibility
     pub is_partial: bool,
@@ -143,6 +145,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                             let chunk_timestamp = chunk.timestamp;
                             let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
+                            let speaker_id = chunk.speaker_id;
                             let source = match &chunk.device_type {
                                 DeviceType::Microphone => "Você",
                                 DeviceType::System => "Outros",
@@ -214,6 +217,7 @@ pub fn start_transcription_task<R: Runtime>(
                                             text: transcript,
                                             timestamp: format_current_timestamp(), // Wall-clock for reference
                                             source: source.to_string(),
+                                            speaker_id,
                                             sequence_id,
                                             chunk_start_time: chunk_timestamp, // Legacy compatibility
                                             is_partial,

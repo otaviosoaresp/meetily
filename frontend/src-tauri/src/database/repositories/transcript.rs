@@ -47,8 +47,8 @@ impl TranscriptsRepository {
         for segment in transcripts {
             let transcript_id = format!("transcript-{}", Uuid::new_v4());
             let result = sqlx::query(
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, source)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, source, speaker_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
@@ -58,6 +58,7 @@ impl TranscriptsRepository {
             .bind(segment.audio_end_time)
             .bind(segment.duration)
             .bind(&segment.source)
+            .bind(segment.speaker_id)
             .execute(&mut *transaction)
             .await;
 
@@ -68,6 +69,21 @@ impl TranscriptsRepository {
                 );
                 transaction.rollback().await?;
                 return Err(e);
+            }
+        }
+
+        for segment in transcripts {
+            if let Some(speaker_id) = segment.speaker_id {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO meeting_speakers (meeting_id, speaker_id, name, created_at, updated_at)
+                     VALUES (?, ?, NULL, ?, ?)",
+                )
+                .bind(&meeting_id)
+                .bind(speaker_id)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *transaction)
+                .await?;
             }
         }
 
@@ -150,9 +166,11 @@ impl TranscriptsRepository {
 mod tests {
     use super::*;
     use crate::database::models::Transcript;
+    use crate::database::repositories::speaker::SpeakersRepository;
     use sqlx::sqlite::SqlitePoolOptions;
 
     const SOURCE_MIGRATION_VERSION: i64 = 20260817000000;
+    const SPEAKER_MIGRATION_VERSION: i64 = 20260817000001;
 
     async fn in_memory_pool() -> SqlitePool {
         SqlitePoolOptions::new()
@@ -171,6 +189,7 @@ mod tests {
             audio_end_time: Some(start + 1.0),
             duration: Some(1.0),
             source: source.map(|s| s.to_string()),
+            speaker_id: None,
         }
     }
 
@@ -182,9 +201,11 @@ mod tests {
             .await
             .expect("migrations must apply to a fresh database");
 
+        let mut system_segment = segment("seg-sys", "fala do sistema", 1.0, Some("Outros"));
+        system_segment.speaker_id = Some(7);
         let segments = vec![
             segment("seg-mic", "fala do microfone", 0.0, Some("Você")),
-            segment("seg-sys", "fala do sistema", 1.0, Some("Outros")),
+            system_segment,
             segment("seg-legacy", "segmento antigo", 2.0, None),
         ];
         let meeting_id =
@@ -210,6 +231,58 @@ mod tests {
             ],
             "microphone/system labels must round-trip through SQLite and legacy segments stay NULL"
         );
+
+        let persisted_speaker: Option<i64> = sqlx::query_scalar(
+            "SELECT speaker_id FROM transcripts WHERE meeting_id = ? AND transcript = 'fala do sistema'",
+        )
+        .bind(&meeting_id)
+        .fetch_one(&pool)
+        .await
+        .expect("speaker assignment must round-trip");
+        assert_eq!(persisted_speaker, Some(7));
+
+        let speaker_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM meeting_speakers WHERE meeting_id = ? AND speaker_id = 7",
+        )
+        .bind(&meeting_id)
+        .fetch_one(&pool)
+        .await
+        .expect("speaker cluster must be persisted");
+        assert_eq!(speaker_count, 1);
+
+        let renamed = SpeakersRepository::rename(
+            &pool,
+            &meeting_id,
+            7,
+            Some("Ana".to_string()),
+        )
+        .await
+        .expect("speaker rename must succeed");
+        assert_eq!(renamed.name.as_deref(), Some("Ana"));
+
+        let system_transcript_id: String = sqlx::query_scalar(
+            "SELECT id FROM transcripts WHERE meeting_id = ? AND transcript = 'fala do sistema'",
+        )
+        .bind(&meeting_id)
+        .fetch_one(&pool)
+        .await
+        .expect("system transcript must exist");
+        SpeakersRepository::reassign_transcript(
+            &pool,
+            &meeting_id,
+            &system_transcript_id,
+            Some(8),
+        )
+            .await
+            .expect("speaker reassignment must succeed");
+        let reassigned: Option<i64> = sqlx::query_scalar(
+            "SELECT speaker_id FROM transcripts WHERE id = ?",
+        )
+        .bind(&system_transcript_id)
+        .fetch_one(&pool)
+        .await
+        .expect("reassigned transcript must load");
+        assert_eq!(reassigned, Some(8));
     }
 
     #[tokio::test]
@@ -257,12 +330,22 @@ mod tests {
             .await
             .expect("source migration must apply to a populated legacy database");
 
+        let speaker_migration = migrator
+            .iter()
+            .find(|m| m.version == SPEAKER_MIGRATION_VERSION)
+            .expect("speaker assignments migration must exist");
+        sqlx::raw_sql(speaker_migration.sql.as_ref())
+            .execute(&pool)
+            .await
+            .expect("speaker migration must apply to a populated legacy database");
+
         let legacy: Transcript = sqlx::query_as("SELECT * FROM transcripts WHERE id = ?")
             .bind("transcript-legacy")
             .fetch_one(&pool)
             .await
             .expect("legacy row must still load after migration");
         assert_eq!(legacy.source, None, "pre-migration rows must load with NULL source");
+        assert_eq!(legacy.speaker_id, None, "pre-migration rows must load with NULL speaker");
         assert_eq!(legacy.transcript, "gravado antes da migração");
     }
 }

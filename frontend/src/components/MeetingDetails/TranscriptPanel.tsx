@@ -1,9 +1,10 @@
 "use client";
 
-import { Transcript, TranscriptSegmentData } from '@/types';
+import { Speaker, Transcript, TranscriptSegmentData } from '@/types';
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
+import { SpeakerEditor } from './SpeakerEditor';
 import { useMemo } from 'react';
 
 interface TranscriptPanelProps {
@@ -28,6 +29,9 @@ interface TranscriptPanelProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+  speakers?: Speaker[];
+  onRenameSpeaker?: (speakerId: number, name: string) => Promise<void>;
+  onSpeakerChange?: (segmentId: string, speakerId: number | null) => Promise<void>;
 }
 
 export function TranscriptPanel({
@@ -48,6 +52,9 @@ export function TranscriptPanel({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  speakers = [],
+  onRenameSpeaker,
+  onSpeakerChange,
 }: TranscriptPanelProps) {
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
@@ -61,6 +68,7 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       source: t.source,
+      speakerId: t.speaker_id,
       confidence: t.confidence,
     }));
   }, [transcripts, usePagination, segments]);
@@ -79,6 +87,8 @@ export function TranscriptPanel({
         />
       </div>
 
+      {onRenameSpeaker && <SpeakerEditor speakers={speakers} onRename={onRenameSpeaker} />}
+
       {/* Transcript content - use virtualized view for better performance */}
       <div className="flex-1 overflow-hidden pb-4">
         <VirtualizedTranscriptView
@@ -95,6 +105,8 @@ export function TranscriptPanel({
           totalCount={totalCount}
           loadedCount={loadedCount}
           onLoadMore={onLoadMore}
+          speakers={speakers}
+          onSpeakerChange={onSpeakerChange}
         />
       </div>
 

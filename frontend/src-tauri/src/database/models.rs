@@ -36,6 +36,16 @@ pub struct Transcript {
     pub audio_end_time: Option<f64>,
     pub duration: Option<f64>,
     pub source: Option<String>,
+    pub speaker_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SpeakerModel {
+    pub meeting_id: String,
+    pub speaker_id: i64,
+    pub name: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

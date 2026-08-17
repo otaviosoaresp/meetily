@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Transcript, MeetingMetadata, PaginatedTranscriptsResponse, TranscriptSegmentData } from "@/types";
+import { Transcript, MeetingMetadata, PaginatedTranscriptsResponse, TranscriptSegmentData, Speaker } from "@/types";
 
 const DEFAULT_PAGE_SIZE = 100;
 
@@ -20,11 +20,14 @@ interface UsePaginatedTranscriptsReturn {
     totalCount: number;
     loadedCount: number;
     error: string | null;
+    speakers: Speaker[];
 
     // Actions
     loadMore: () => Promise<void>;
     reset: () => void;
     refetch: () => Promise<void>;
+    renameSpeaker: (speakerId: number, name: string) => Promise<void>;
+    reassignSpeaker: (transcriptId: string, speakerId: number | null) => Promise<void>;
 }
 
 /**
@@ -37,6 +40,7 @@ function convertTranscriptsToSegments(transcripts: Transcript[]): TranscriptSegm
         endTime: t.audio_end_time,
         text: t.text,
         source: t.source,
+        speakerId: t.speaker_id,
         confidence: t.confidence,
     }));
 }
@@ -52,6 +56,7 @@ export function usePaginatedTranscripts({
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [hasMore, setHasMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [speakers, setSpeakers] = useState<Speaker[]>([]);
 
     const offsetRef = useRef(0);
     const loadedMeetingIdRef = useRef<string | null>(null);
@@ -67,6 +72,7 @@ export function usePaginatedTranscripts({
         setIsLoadingMore(false);
         setHasMore(false);
         setError(null);
+        setSpeakers([]);
         offsetRef.current = 0;
     }, []);
 
@@ -84,6 +90,16 @@ export function usePaginatedTranscripts({
             console.error('Failed to load meeting metadata:', err);
             setError('Failed to load meeting details');
             return null;
+        }
+    }, [meetingId]);
+
+    const loadSpeakers = useCallback(async (): Promise<void> => {
+        if (!meetingId) return;
+        try {
+            const data = await invoke<Speaker[]>('api_get_meeting_speakers', { meetingId });
+            setSpeakers(data);
+        } catch (err) {
+            console.error('Failed to load meeting speakers:', err);
         }
     }, [meetingId]);
 
@@ -162,10 +178,42 @@ export function usePaginatedTranscripts({
         try {
             await loadMetadata();
             await loadTranscriptsAtOffset(0, false);
+            await loadSpeakers();
         } finally {
             setIsLoading(false);
         }
-    }, [meetingId, reset, loadMetadata, loadTranscriptsAtOffset]);
+    }, [meetingId, reset, loadMetadata, loadTranscriptsAtOffset, loadSpeakers]);
+
+    const renameSpeaker = useCallback(async (speakerId: number, name: string): Promise<void> => {
+        const updated = await invoke<Speaker>('api_rename_speaker', {
+            meetingId,
+            speakerId,
+            name,
+        });
+        setSpeakers(prev => [
+            ...prev.filter(speaker => speaker.speaker_id !== speakerId),
+            updated,
+        ].sort((a, b) => a.speaker_id - b.speaker_id));
+    }, [meetingId]);
+
+    const reassignSpeaker = useCallback(async (
+        transcriptId: string,
+        speakerId: number | null,
+    ): Promise<void> => {
+        await invoke('api_reassign_transcript_speaker', {
+            meetingId,
+            transcriptId,
+            speakerId,
+        });
+        setTranscripts(prev => prev.map(transcript =>
+            transcript.id === transcriptId
+                ? { ...transcript, speaker_id: speakerId ?? undefined }
+                : transcript
+        ));
+        if (speakerId !== null && !speakers.some(speaker => speaker.speaker_id === speakerId)) {
+            await loadSpeakers();
+        }
+    }, [loadSpeakers, meetingId, speakers]);
 
     // Initial load
     useEffect(() => {
@@ -185,13 +233,14 @@ export function usePaginatedTranscripts({
             try {
                 await loadMetadata();
                 await loadTranscriptsAtOffset(0, false);
+                await loadSpeakers();
             } finally {
                 setIsLoading(false);
             }
         };
 
         loadInitial();
-    }, [meetingId, reset, loadMetadata, loadTranscriptsAtOffset]);
+    }, [meetingId, reset, loadMetadata, loadTranscriptsAtOffset, loadSpeakers]);
 
     // Convert to segments (memoized)
     const segments = useMemo(() =>
@@ -212,5 +261,8 @@ export function usePaginatedTranscripts({
         loadMore,
         reset,
         refetch,
+        speakers,
+        renameSpeaker,
+        reassignSpeaker,
     };
 }

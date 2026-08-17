@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use anyhow::Result;
@@ -12,6 +13,7 @@ use super::devices::AudioDevice;
 use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor, SpeechSegment};
+use super::diarization::StreamingSpeakerDiarizer;
 
 /// Ring buffer for synchronized audio mixing
 /// Accumulates samples from mic and system streams until we have aligned windows
@@ -613,6 +615,7 @@ impl AudioCapture {
             timestamp,
             chunk_id,
             device_type: self.device_type.clone(),
+            speaker_id: None,
         };
 
         // NOTE: Raw audio is NOT sent to recording saver to prevent echo
@@ -695,6 +698,7 @@ pub struct AudioPipeline {
     mixer: ProfessionalAudioMixer,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
+    speaker_diarizer: Option<StreamingSpeakerDiarizer>,
 }
 
 impl AudioPipeline {
@@ -708,6 +712,7 @@ impl AudioPipeline {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        diarization_model_path: Option<PathBuf>,
     ) -> Self {
         // Log device characteristics for adaptive buffering
         info!("🎛️ AudioPipeline initializing with device characteristics:");
@@ -749,6 +754,15 @@ impl AudioPipeline {
         // Initialize professional audio mixing components
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate);
         let mixer = ProfessionalAudioMixer::new(sample_rate);
+        let speaker_diarizer = diarization_model_path.and_then(|path| {
+            match StreamingSpeakerDiarizer::new(&path) {
+                Ok(diarizer) => Some(diarizer),
+                Err(error) => {
+                    warn!("Real-time speaker diarization unavailable: {error}");
+                    None
+                }
+            }
+        });
 
         // Note: target_chunk_duration_ms is ignored - VAD controls segmentation now
         let _ = target_chunk_duration_ms;
@@ -770,6 +784,7 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             recording_sender_for_mixed: None,  // Will be set by manager
+            speaker_diarizer,
         }
     }
 
@@ -868,6 +883,7 @@ impl AudioPipeline {
                                     timestamp: chunk.timestamp,
                                     chunk_id: self.chunk_id_counter,
                                     device_type: DeviceType::Microphone,  // Mixed audio
+                                    speaker_id: None,
                                 };
                                 let _ = sender.send(recording_chunk);
                             }
@@ -945,12 +961,21 @@ impl AudioPipeline {
                 device_type
             );
 
+            let speaker_id = if device_type == DeviceType::System {
+                self.speaker_diarizer
+                    .as_mut()
+                    .and_then(|diarizer| diarizer.identify(&segment.samples, 16_000))
+            } else {
+                None
+            };
+
             let transcription_chunk = AudioChunk {
                 data: segment.samples,
                 sample_rate: 16000,
                 timestamp: segment.start_timestamp_ms / 1000.0,
                 chunk_id: self.chunk_id_counter,
                 device_type: device_type.clone(),
+                speaker_id,
             };
 
             if let Err(e) = self.transcription_sender.send(transcription_chunk) {
@@ -989,6 +1014,7 @@ impl AudioPipelineManager {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        diarization_model_path: Option<PathBuf>,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
@@ -1012,6 +1038,7 @@ impl AudioPipelineManager {
             mic_device_kind,
             system_device_name,
             system_device_kind,
+            diarization_model_path,
         );
 
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio
@@ -1062,6 +1089,7 @@ impl AudioPipelineManager {
                 timestamp: 0.0,
                 chunk_id: u64::MAX, // Special ID to indicate flush
                 device_type: super::recording_state::DeviceType::Microphone,
+                speaker_id: None,
             };
 
             if let Err(e) = sender.send(flush_chunk) {
@@ -1082,6 +1110,7 @@ impl AudioPipelineManager {
                         timestamp: 0.0,
                         chunk_id: u64::MAX - (i as u64),
                         device_type: super::recording_state::DeviceType::Microphone,
+                        speaker_id: None,
                     };
                     let _ = sender.send(additional_flush);
                 }
@@ -1162,6 +1191,7 @@ mod tests {
             InputDeviceKind::Wired,
             "test-system".to_string(),
             InputDeviceKind::Wired,
+            None,
         );
         pipeline.recording_sender_for_mixed = Some(recording_tx);
 
@@ -1174,6 +1204,7 @@ mod tests {
                     timestamp: i as f64 * 0.6,
                     chunk_id: i as u64,
                     device_type: DeviceType::Microphone,
+                    speaker_id: None,
                 })
                 .unwrap();
             input_tx
@@ -1183,6 +1214,7 @@ mod tests {
                     timestamp: i as f64 * 0.6,
                     chunk_id: i as u64,
                     device_type: DeviceType::System,
+                    speaker_id: None,
                 })
                 .unwrap();
         }

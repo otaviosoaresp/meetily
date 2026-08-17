@@ -22,6 +22,9 @@ pub struct AudioChunk {
     pub timestamp: f64,
     pub chunk_id: u64,
     pub device_type: DeviceType,
+    /// Meeting-local speaker cluster assigned by the streaming diarizer.
+    /// `None` means microphone audio, unavailable diarization, or ambiguity.
+    pub speaker_id: Option<u32>,
 }
 
 /// Processed audio chunk (post-VAD) for recording

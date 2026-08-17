@@ -96,7 +96,7 @@ Raw Audio (Mic + System)
 
 **Key Insight**: The pipeline performs **professional audio mixing** (RMS-based ducking, clipping prevention) for the recording file, while running a **separate stateful VAD per channel** (microphone and system) so only speech segments reach transcription, each tagged with its `DeviceType`.
 
-**Transcript source labels**: the transcription worker (`audio/transcription/worker.rs`) maps `DeviceType::Microphone` → `"Você"` and `DeviceType::System` → `"Outros"` in `TranscriptUpdate.source`. The UI renders this as a speaker badge, and `recording_saver.rs` persists it in `TranscriptSegment.source` (segments without `source` deserialize as `"Audio"` via serde default and render without a badge).
+**Transcript source labels**: the transcription worker (`audio/transcription/worker.rs`) maps `DeviceType::Microphone` → `"Você"` and `DeviceType::System` → `"Outros"` in `TranscriptUpdate.source`. The UI renders this as a speaker badge, and `recording_saver.rs` persists it in `TranscriptSegment.source` (segments without `source` deserialize as `"Audio"` via serde default and render without a badge). The SQLite `transcripts` table also stores it in a nullable `source` column (migration `20260817000000_add_transcript_source.sql`; `NULL` for legacy rows), so saved meetings reload with per-segment labels.
 
 ### Audio Device Modularization (Recently Completed)
 

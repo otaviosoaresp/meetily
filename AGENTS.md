@@ -88,13 +88,15 @@ Raw Audio (Mic + System)
               ↓                          ↓
     ┌─────────────────┐        ┌─────────────────────┐
     │ Recording Path  │        │ Transcription Path  │
-    │ (Pre-mixed)     │        │ (VAD-filtered)      │
+    │ (Pre-mixed)     │        │ (per-channel VAD)   │
     └─────────────────┘        └─────────────────────┘
               ↓                          ↓
     RecordingSaver.save()      WhisperEngine.transcribe()
 ```
 
-**Key Insight**: The pipeline performs **professional audio mixing** (RMS-based ducking, clipping prevention) for recording, while simultaneously applying **Voice Activity Detection (VAD)** to send only speech segments to Whisper for transcription.
+**Key Insight**: The pipeline performs **professional audio mixing** (RMS-based ducking, clipping prevention) for the recording file, while running a **separate stateful VAD per channel** (microphone and system) so only speech segments reach transcription, each tagged with its `DeviceType`.
+
+**Transcript source labels**: the transcription worker (`audio/transcription/worker.rs`) maps `DeviceType::Microphone` → `"Você"` and `DeviceType::System` → `"Outros"` in `TranscriptUpdate.source`. The UI renders this as a speaker badge, and `recording_saver.rs` persists it in `TranscriptSegment.source` (segments without `source` deserialize as `"Audio"` via serde default and render without a badge).
 
 ### Audio Device Modularization (Recently Completed)
 
@@ -387,7 +389,6 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
   - `main`: Stable releases
   - `fix/*`: Bug fixes
   - `enhance/*`: Feature enhancements
-  - Current: `fix/audio-mixing` (working on audio pipeline improvements)
 
 ## Key Files Reference
 

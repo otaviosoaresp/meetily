@@ -21,6 +21,7 @@ use super::{
     DeviceEvent,
     DeviceMonitorType
 };
+use super::application_capture::AudioCaptureSelection;
 
 // Import transcription modules
 use super::transcription::{
@@ -67,13 +68,14 @@ pub struct TranscriptionStatus {
 
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    start_recording_with_meeting_name(app, None).await
+    start_recording_with_meeting_name(app, None, AudioCaptureSelection::global()).await
 }
 
 /// Start recording with default devices and optional meeting name
 pub async fn start_recording_with_meeting_name<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
+    capture_selection: AudioCaptureSelection,
 ) -> Result<(), String> {
     info!(
         "Starting recording with default devices, meeting: {:?}",
@@ -234,7 +236,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
-        .start_recording(microphone_device, system_device, auto_save)
+        .start_recording(microphone_device, system_device, capture_selection, auto_save)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -316,7 +318,7 @@ pub async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None).await
 }
 
 /// Start recording with specific devices and optional meeting name
@@ -325,7 +327,10 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    capture_selection: Option<AudioCaptureSelection>,
 ) -> Result<(), String> {
+    let capture_selection = capture_selection.unwrap_or_else(AudioCaptureSelection::global);
+    capture_selection.validate().map_err(|error| error.to_string())?;
     info!(
         "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
         mic_device_name, system_device_name, meeting_name
@@ -366,7 +371,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         None
     };
 
-    let system_device = if let Some(ref name) = system_device_name {
+    let system_device = if capture_selection.is_application() {
+        None
+    } else if let Some(ref name) = system_device_name {
         Some(Arc::new(parse_audio_device(name).map_err(|e| {
             format!("Invalid system device '{}': {}", name, e)
         })?))
@@ -410,7 +417,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
-        .start_recording(mic_device, system_device, auto_save)
+        .start_recording(mic_device, system_device, capture_selection, auto_save)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 

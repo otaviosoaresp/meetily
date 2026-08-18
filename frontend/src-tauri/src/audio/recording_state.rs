@@ -46,6 +46,7 @@ pub enum AudioError {
     PermissionDenied,
     BufferOverflow,
     SampleRateUnsupported,
+    SelectedAudioUnavailable(String),
 }
 
 impl AudioError {
@@ -63,6 +64,7 @@ impl AudioError {
             AudioError::PermissionDenied => false,
             AudioError::BufferOverflow => true,
             AudioError::SampleRateUnsupported => false,
+            AudioError::SelectedAudioUnavailable(_) => false,
         }
     }
 
@@ -79,6 +81,7 @@ impl AudioError {
             AudioError::PermissionDenied => "Microphone permission denied",
             AudioError::BufferOverflow => "Audio buffer overflow",
             AudioError::SampleRateUnsupported => "Audio sample rate not supported",
+            AudioError::SelectedAudioUnavailable(_) => "Selected application audio is unavailable. Switch to global system audio.",
         }
     }
 }

@@ -125,6 +125,24 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
     };
   }, [showModal]);
 
+  // Selected application audio failures remain visible and never trigger a
+  // fallback to global system capture.
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+
+    const setupRecordingErrorListener = async () => {
+      unlistenFn = await listen<string>('recording-error', (event) => {
+        toast.error('Recording audio source unavailable', {
+          description: String(event.payload),
+          duration: 8000,
+        });
+      });
+    };
+
+    void setupRecordingErrorListener();
+    return () => unlistenFn?.();
+  }, []);
+
   // Set up transcription error listener for model loading failures
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;

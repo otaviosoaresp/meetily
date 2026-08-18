@@ -754,15 +754,14 @@ impl AudioPipeline {
         // Initialize professional audio mixing components
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate);
         let mixer = ProfessionalAudioMixer::new(sample_rate);
-        let speaker_diarizer = diarization_model_path.and_then(|path| {
-            match StreamingSpeakerDiarizer::new(&path) {
+        let speaker_diarizer =
+            diarization_model_path.and_then(|path| match StreamingSpeakerDiarizer::new(&path) {
                 Ok(diarizer) => Some(diarizer),
                 Err(error) => {
                     warn!("Real-time speaker diarization unavailable: {error}");
                     None
                 }
-            }
-        });
+            });
 
         // Note: target_chunk_duration_ms is ignored - VAD controls segmentation now
         let _ = target_chunk_duration_ms;

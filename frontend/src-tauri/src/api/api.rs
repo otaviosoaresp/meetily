@@ -8,8 +8,8 @@ use crate::{
     database::{
         models::MeetingModel,
         repositories::{
-            meeting::MeetingsRepository, setting::SettingsRepository,
-            speaker::SpeakersRepository, transcript::TranscriptsRepository,
+            meeting::MeetingsRepository, setting::SettingsRepository, speaker::SpeakersRepository,
+            transcript::TranscriptsRepository,
         },
     },
     state::AppState,
@@ -970,18 +970,13 @@ pub async fn api_rename_speaker<R: Runtime>(
     speaker_id: i64,
     name: String,
 ) -> Result<Speaker, String> {
-    SpeakersRepository::rename(
-        state.db_manager.pool(),
-        &meeting_id,
-        speaker_id,
-        Some(name),
-    )
-    .await
-    .map(|speaker| Speaker {
-        speaker_id: speaker.speaker_id,
-        name: speaker.name,
-    })
-    .map_err(|error| format!("Failed to rename speaker: {error}"))
+    SpeakersRepository::rename(state.db_manager.pool(), &meeting_id, speaker_id, Some(name))
+        .await
+        .map(|speaker| Speaker {
+            speaker_id: speaker.speaker_id,
+            name: speaker.name,
+        })
+        .map_err(|error| format!("Failed to rename speaker: {error}"))
 }
 
 #[tauri::command]

@@ -101,6 +101,12 @@ Whether you're a defense consultant, enterprise executive, legal professional, o
 - **Open Source:** Meetily is open source and free to use.
 - **Flexible AI Provider Support:** Choose from Ollama (local), Claude, Groq, OpenRouter, or use your own OpenAI-compatible endpoint.
 
+## Fork Extras
+
+This fork adds features not present in the upstream Community Edition:
+
+- **Real-time Speaker Labeling:** During recording, system-audio transcript lines are labeled per speaker ("Outros 1", "Outros 2", ...) using local, CPU-based speaker diarization, while your microphone lines stay labeled "Você". You can rename a speaker (applied to all of that speaker's lines) and reassign individual system segments to another speaker; names and assignments persist with the meeting. The embedding model downloads automatically on first recording; system lines stay unlabeled until it is installed.
+
 ## Installation
 
 ### 🪟 **Windows**

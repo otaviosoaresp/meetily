@@ -47,6 +47,9 @@ next-env.d.ts
 
 # Audio files
 *.wav
+!frontend/src-tauri/testdata/
+!frontend/src-tauri/testdata/diarization/
+!frontend/src-tauri/testdata/diarization/*.wav
 
 # Large media files
 docs/demo.mov

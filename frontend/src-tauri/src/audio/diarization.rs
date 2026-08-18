@@ -9,7 +9,7 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use log::{info, warn};
-use pyannote_rs::{EmbeddingExtractor, EmbeddingManager};
+use pyannote_rs::EmbeddingExtractor;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +22,10 @@ pub const EMBEDDING_MODEL_URL: &str = "https://github.com/thewh1teagle/pyannote-
 
 const DEFAULT_MAX_SPEAKERS: usize = 16;
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.5;
-const MIN_EMBEDDING_SAMPLES: usize = 16_000;
+/// Speaker embeddings from shorter windows are too unstable to open or move a
+/// live cluster. Leaving those lines plain Outros is safer than inventing a
+/// new person from a brief syllable or a transient.
+const MIN_EMBEDDING_SAMPLES: usize = 16_000 * 2;
 /// Keep each embedding focused on one conversational turn. A VAD segment can
 /// be long when multiple remote speakers talk without a pause, so it must not
 /// be represented by one mixed embedding.
@@ -30,6 +33,12 @@ const EMBEDDING_WINDOW_SAMPLES: usize = 16_000 * 4;
 /// Bound live inference cost while still sampling enough of a long segment to
 /// determine whether one speaker is dominant.
 const MAX_EMBEDDING_WINDOWS: usize = 4;
+/// A miss near the match threshold is treated as uncertain evidence. It must
+/// recur in a second window before it can open a cluster; a clearly distant
+/// embedding may open one immediately, which preserves one-window speakers in
+/// the measured multi-speaker fixture.
+const NEW_SPEAKER_MAX_SIMILARITY: f32 = 0.2;
+const PENDING_SPEAKER_CONFIRMATION_SIMILARITY: f32 = 0.6;
 const DOWNLOAD_PROGRESS_EVENT: &str = "diarization-model-download-progress";
 const FALLBACK_MODEL_TOTAL_MB: f64 = 28.0;
 
@@ -39,8 +48,94 @@ static DOWNLOAD_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// one-based, so the conversion is kept at this boundary.
 pub struct StreamingSpeakerDiarizer {
     extractor: EmbeddingExtractor,
-    speakers: EmbeddingManager,
-    similarity_threshold: f32,
+    speakers: SpeakerClusters,
+}
+
+#[derive(Debug, Default)]
+struct SpeakerClusters {
+    clusters: Vec<SpeakerCluster>,
+    pending: Option<Vec<f32>>,
+}
+
+#[derive(Debug)]
+struct SpeakerCluster {
+    centroid: Vec<f32>,
+    observations: usize,
+}
+
+impl SpeakerClusters {
+    fn assign(&mut self, embedding: Vec<f32>) -> Option<u32> {
+        if self.clusters.is_empty() {
+            return Some(self.add_cluster(embedding));
+        }
+
+        let (best_index, best_similarity) = self.best_match(&embedding)?;
+        if let Some(pending) = self.pending.take() {
+            if cosine_similarity(&pending, &embedding) >= PENDING_SPEAKER_CONFIRMATION_SIMILARITY {
+                return Some(self.add_cluster(embedding));
+            }
+        }
+
+        if best_similarity >= DEFAULT_SIMILARITY_THRESHOLD {
+            self.update_cluster(best_index, &embedding);
+            return Some(best_index as u32);
+        }
+
+        if best_similarity <= NEW_SPEAKER_MAX_SIMILARITY {
+            let speaker_id = self.add_cluster(embedding);
+            Some(speaker_id)
+        } else {
+            self.pending = Some(embedding);
+            None
+        }
+    }
+
+    fn best_match(&self, embedding: &[f32]) -> Option<(usize, f32)> {
+        self.clusters
+            .iter()
+            .enumerate()
+            .map(|(index, cluster)| (index, cosine_similarity(&cluster.centroid, embedding)))
+            .max_by(|(_, left), (_, right)| left.total_cmp(right))
+    }
+
+    fn add_cluster(&mut self, embedding: Vec<f32>) -> u32 {
+        let speaker_id = self.clusters.len() as u32;
+        self.clusters.push(SpeakerCluster {
+            centroid: normalized(embedding),
+            observations: 1,
+        });
+        speaker_id
+    }
+
+    fn update_cluster(&mut self, index: usize, embedding: &[f32]) {
+        let cluster = &mut self.clusters[index];
+        let weight = cluster.observations as f32;
+        for (centroid, value) in cluster.centroid.iter_mut().zip(embedding) {
+            *centroid = (*centroid * weight + *value) / (weight + 1.0);
+        }
+        cluster.centroid = normalized(std::mem::take(&mut cluster.centroid));
+        cluster.observations += 1;
+    }
+}
+
+fn normalized(mut values: Vec<f32>) -> Vec<f32> {
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > f32::EPSILON {
+        for value in &mut values {
+            *value /= norm;
+        }
+    }
+    values
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    let dot = left.iter().zip(right).map(|(a, b)| a * b).sum::<f32>();
+    let left_norm = left.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let right_norm = right.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if left_norm <= f32::EPSILON || right_norm <= f32::EPSILON {
+        return 0.0;
+    }
+    dot / (left_norm * right_norm)
 }
 
 impl StreamingSpeakerDiarizer {
@@ -61,8 +156,7 @@ impl StreamingSpeakerDiarizer {
         );
         Ok(Self {
             extractor,
-            speakers: EmbeddingManager::new(DEFAULT_MAX_SPEAKERS),
-            similarity_threshold: DEFAULT_SIMILARITY_THRESHOLD,
+            speakers: SpeakerClusters::default(),
         })
     }
 
@@ -108,12 +202,14 @@ impl StreamingSpeakerDiarizer {
             }
         };
 
-        let speaker_id = self
-            .speakers
-            .search_speaker(embedding.clone(), self.similarity_threshold)
-            .or_else(|| self.speakers.search_speaker(embedding, 0.0));
+        if self.speakers.clusters.len() >= DEFAULT_MAX_SPEAKERS {
+            return self
+                .speakers
+                .best_match(&embedding)
+                .map(|(id, _)| id as u32);
+        }
 
-        speaker_id.map(|id| id.saturating_sub(1) as u32)
+        self.speakers.assign(embedding)
     }
 }
 
@@ -359,6 +455,25 @@ mod tests {
         assert!(path.ends_with("models/diarization/wespeaker_en_voxceleb_CAM++.onnx"));
     }
 
+    #[test]
+    fn uncertain_new_cluster_requires_accumulated_evidence() {
+        let mut clusters = SpeakerClusters::default();
+        assert_eq!(clusters.assign(vec![1.0, 0.0]), Some(0));
+        assert_eq!(clusters.assign(vec![0.45, 0.89]), None);
+        assert_eq!(clusters.assign(vec![0.45, 0.89]), Some(1));
+    }
+
+    #[test]
+    fn matched_embeddings_update_the_cluster_centroid() {
+        let mut clusters = SpeakerClusters::default();
+        assert_eq!(clusters.assign(vec![1.0, 0.0]), Some(0));
+        assert_eq!(clusters.assign(vec![0.9, 0.2]), Some(0));
+        assert_eq!(clusters.assign(vec![0.8, 0.4]), Some(0));
+        assert_eq!(clusters.clusters.len(), 1);
+        assert_eq!(clusters.clusters[0].observations, 3);
+        assert!(clusters.clusters[0].centroid[1] > 0.1);
+    }
+
     fn read_mono_16k_wav(path: &Path) -> Vec<f32> {
         let bytes = std::fs::read(path).expect("sample wav must exist");
         let data_offset = bytes
@@ -370,6 +485,12 @@ mod tests {
             .chunks_exact(2)
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / i16::MAX as f32)
             .collect()
+    }
+
+    fn committed_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/diarization")
+            .join(name)
     }
 
     /// End-to-end check of the streaming path on the real CPU model: multi-
@@ -453,6 +574,41 @@ mod tests {
         assert!(
             assignments.iter().any(Option::is_none),
             "mixed long segments must stay plain Outros when no speaker dominates: {assignments:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs MEETILY_DIARIZATION_TEST_ASSETS with paired wav fixtures and the ONNX model"]
+    fn real_model_paired_fixtures_match_expected_speaker_counts() {
+        let Ok(assets) = std::env::var("MEETILY_DIARIZATION_TEST_ASSETS") else {
+            eprintln!("MEETILY_DIARIZATION_TEST_ASSETS not set; nothing to do");
+            return;
+        };
+        let assets = PathBuf::from(assets);
+        let single = read_mono_16k_wav(&committed_fixture("single_speaker_long.wav"));
+        let mut single_diarizer = StreamingSpeakerDiarizer::new(&assets.join(EMBEDDING_MODEL_FILE))
+            .expect("embedding model must load on CPU");
+        let single_clusters: std::collections::BTreeSet<u32> = single
+            .chunks(4 * 16_000)
+            .filter_map(|chunk| single_diarizer.identify(chunk, 16_000))
+            .collect();
+        assert_eq!(
+            single_clusters.len(),
+            1,
+            "single-speaker fixture must yield exactly one cluster, got {single_clusters:?}"
+        );
+
+        let multi = read_mono_16k_wav(&committed_fixture("6_speakers.wav"));
+        let mut multi_diarizer = StreamingSpeakerDiarizer::new(&assets.join(EMBEDDING_MODEL_FILE))
+            .expect("embedding model must load on CPU");
+        let multi_clusters: std::collections::BTreeSet<u32> = multi
+            .chunks(4 * 16_000)
+            .filter_map(|chunk| multi_diarizer.identify(chunk, 16_000))
+            .collect();
+        assert_eq!(
+            multi_clusters.len(),
+            6,
+            "multi-speaker fixture must yield six clusters, got {multi_clusters:?}"
         );
     }
 }

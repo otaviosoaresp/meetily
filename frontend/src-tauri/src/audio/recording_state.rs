@@ -81,7 +81,7 @@ impl AudioError {
             AudioError::PermissionDenied => "Microphone permission denied",
             AudioError::BufferOverflow => "Audio buffer overflow",
             AudioError::SampleRateUnsupported => "Audio sample rate not supported",
-            AudioError::SelectedAudioUnavailable(_) => "Selected application audio is unavailable. Switch to global system audio.",
+            AudioError::SelectedAudioUnavailable(_) => "Selected application audio is unavailable. Microphone recording continues; use global system audio for the next meeting.",
         }
     }
 }
@@ -306,6 +306,8 @@ impl RecordingState {
                 log::error!("Too many recoverable errors ({}), stopping recording", recoverable_count);
                 self.stop_recording();
             }
+        } else if matches!(error, AudioError::SelectedAudioUnavailable(_)) {
+            log::error!("Selected application audio lane lost, keeping microphone recording active: {:?}", error);
         } else {
             log::error!("Non-recoverable audio error: {:?}", error);
             // Stop immediately for non-recoverable errors

@@ -70,8 +70,14 @@ impl SpeakerClusters {
         }
 
         let (best_index, best_similarity) = self.best_match(&embedding)?;
-        let pending = self.pending.take();
-        if best_similarity >= DEFAULT_SIMILARITY_THRESHOLD {
+        let pending_similarity = self
+            .pending
+            .take()
+            .map(|pending| cosine_similarity(&pending, &embedding))
+            .filter(|similarity| *similarity >= PENDING_SPEAKER_CONFIRMATION_SIMILARITY);
+        let pending_confirms_new_speaker =
+            pending_similarity.is_some_and(|similarity| similarity > best_similarity);
+        if best_similarity >= DEFAULT_SIMILARITY_THRESHOLD && !pending_confirms_new_speaker {
             self.update_cluster(best_index, &embedding);
             return Some(best_index as u32);
         }
@@ -80,10 +86,8 @@ impl SpeakerClusters {
             return None;
         }
 
-        if let Some(pending) = pending {
-            if cosine_similarity(&pending, &embedding) >= PENDING_SPEAKER_CONFIRMATION_SIMILARITY {
-                return Some(self.add_cluster(embedding));
-            }
+        if pending_similarity.is_some() {
+            return Some(self.add_cluster(embedding));
         }
 
         if best_similarity <= NEW_SPEAKER_MAX_SIMILARITY {

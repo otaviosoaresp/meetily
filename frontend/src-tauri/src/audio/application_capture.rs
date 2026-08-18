@@ -183,8 +183,7 @@ mod linux {
                 ),
                 crate::audio::devices::DeviceType::Output,
             ));
-            let capture =
-                AudioCapture::new(device, state, 48000, 2, DeviceType::System, None);
+            let capture = AudioCapture::new(device, state, 48000, 2, DeviceType::System, None);
 
             let (ready_sender, ready_receiver) = std_mpsc::channel::<Result<()>>();
             let (stop_sender, stop_receiver) = pw::channel::channel::<()>();
@@ -278,10 +277,7 @@ mod linux {
         let reported_error = Arc::new(AtomicBool::new(false));
         let error_state = reported_error.clone();
         let main_loop_for_error = main_loop.clone();
-        let user_data = CaptureUserData {
-            capture,
-            format,
-        };
+        let user_data = CaptureUserData { capture, format };
         let listener = stream
             .add_local_listener_with_user_data(user_data)
             .state_changed(move |_, data, _, new_state| {
@@ -502,9 +498,7 @@ mod linux {
             })?
     }
 
-    fn is_application_audio_global(
-        global: &GlobalObject<&pw::spa::utils::dict::DictRef>,
-    ) -> bool {
+    fn is_application_audio_global(global: &GlobalObject<&pw::spa::utils::dict::DictRef>) -> bool {
         global.type_.to_str() == NODE_INTERFACE
             && global
                 .props
@@ -625,7 +619,8 @@ mod tests {
 
     #[test]
     fn frontend_global_payload_deserializes() {
-        let selection: AudioCaptureSelection = serde_json::from_str(r#"{"mode":"global"}"#).unwrap();
+        let selection: AudioCaptureSelection =
+            serde_json::from_str(r#"{"mode":"global"}"#).unwrap();
         assert_eq!(selection.mode, AudioCaptureMode::Global);
         assert!(selection.object_serial.is_none());
     }
@@ -671,7 +666,12 @@ mod tests {
 
     #[test]
     fn select_capture_target_fails_visibly_when_stream_is_gone() {
-        let streams = vec![stream(92, "speech-dispatcher-dummy", "playback", "sd_dummy")];
+        let streams = vec![stream(
+            92,
+            "speech-dispatcher-dummy",
+            "playback",
+            "sd_dummy",
+        )];
         let error = select_capture_target(streams, &application_selection(Some(187)))
             .unwrap_err()
             .to_string();
@@ -687,7 +687,11 @@ mod tests {
         let error = select_capture_target(streams, &application_selection(Some(187)))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("multiple matching media streams"), "{}", error);
+        assert!(
+            error.contains("multiple matching media streams"),
+            "{}",
+            error
+        );
     }
 
     #[test]
@@ -726,10 +730,9 @@ mod tests {
                 .invoke_handler(tauri::generate_handler![echo_capture_selection])
                 .build(mock_context(noop_assets()))
                 .expect("failed to build mock Tauri app");
-            let webview =
-                tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-                    .build()
-                    .expect("failed to build mock webview");
+            let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+                .build()
+                .expect("failed to build mock webview");
             #[cfg(windows)]
             let local_origin = "http://tauri.localhost";
             #[cfg(not(windows))]

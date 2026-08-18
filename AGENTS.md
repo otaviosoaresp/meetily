@@ -139,10 +139,13 @@ audio/
 **Command Pattern** (Frontend → Rust):
 ```typescript
 // Frontend: src/app/page.tsx
+// Invoke argument keys must be camelCase: without rename_all, tauri commands
+// look up camelCase wire keys and snake_case keys silently deserialize to None
+// (pinned by the ipc_boundary tests in audio/application_capture.rs).
 await invoke('start_recording', {
-  mic_device_name: "Built-in Microphone",
-  system_device_name: "BlackHole 2ch",
-  meeting_name: "Team Standup"
+  micDeviceName: "Built-in Microphone",
+  systemDeviceName: "BlackHole 2ch",
+  meetingName: "Team Standup"
 });
 ```
 

@@ -84,6 +84,15 @@ impl AudioStream {
             }
         }
 
+        #[cfg(not(target_os = "linux"))]
+        if let Some(selection) = &application_selection {
+            if selection.mode == AudioCaptureMode::Application {
+                return Err(anyhow::anyhow!(
+                    "Selected application audio capture requires PipeWire and is only available on Linux; global system capture will not be used as a fallback"
+                ));
+            }
+        }
+
         // For system audio devices, use the selected backend
         // For microphone devices, always use CPAL
         #[cfg(target_os = "macos")]

@@ -37,6 +37,12 @@ impl AudioCaptureSelection {
             return Ok(());
         }
 
+        if cfg!(not(target_os = "linux")) {
+            return Err(anyhow!(
+                "Selected application audio capture requires PipeWire and is only available on Linux. Use global system audio on this platform."
+            ));
+        }
+
         if self.object_serial.is_none() {
             return Err(anyhow!(
                 "No application audio stream was selected. Choose an application/media stream or switch to global system audio."
@@ -187,10 +193,14 @@ mod linux {
             let thread = thread::Builder::new()
                 .name("meetily-pipewire-capture".to_string())
                 .spawn(move || {
-                    if let Err(error) =
-                        run_capture_thread(target_serial, capture, stop_receiver, ready_sender)
-                    {
+                    if let Err(error) = run_capture_thread(
+                        target_serial,
+                        capture,
+                        stop_receiver,
+                        ready_sender.clone(),
+                    ) {
                         warn!("PipeWire capture thread exited with error: {}", error);
+                        let _ = ready_sender.send(Err(error));
                     }
                 })
                 .context("Failed to start PipeWire capture thread")?;
@@ -205,12 +215,17 @@ mod linux {
                     let _ = thread.join();
                     Err(error)
                 }
-                Err(error) => {
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {
                     let _ = stop_sender.send(());
                     let _ = thread.join();
                     Err(anyhow!(
-                        "Timed out while connecting to the selected application audio stream: {}",
-                        error
+                        "Timed out while connecting to the selected application audio stream"
+                    ))
+                }
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = thread.join();
+                    Err(anyhow!(
+                        "The PipeWire capture thread stopped before the selected application audio stream became ready"
                     ))
                 }
             }
@@ -449,15 +464,25 @@ mod linux {
                         .register();
                     pending_sync.set(Some(core.sync(0)?));
                     // Hard stop in case the server never answers the round trips.
+                    let enumeration_timed_out = Rc::new(Cell::new(false));
                     let timer = main_loop.loop_().add_timer({
                         let main_loop = main_loop.clone();
-                        move |_| main_loop.quit()
+                        let enumeration_timed_out = enumeration_timed_out.clone();
+                        move |_| {
+                            enumeration_timed_out.set(true);
+                            main_loop.quit();
+                        }
                     });
                     timer.update_timer(Some(Duration::from_secs(2)), None);
                     main_loop.run();
                     drop(listener);
                     drop(core_listener);
                     node_bindings.borrow_mut().clear();
+                    if enumeration_timed_out.get() {
+                        return Err(anyhow!(
+                            "PipeWire did not answer the application stream enumeration within 2 seconds. Try again or use global system audio."
+                        ));
+                    }
                     let streams = Arc::try_unwrap(streams)
                         .map_err(|_| anyhow!("PipeWire enumeration state still in use"))?
                         .into_inner()
@@ -571,6 +596,7 @@ mod tests {
         assert!(selection.validate().is_ok());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn application_selection_without_serial_is_rejected() {
         let mut selection = application_selection(None);
@@ -581,9 +607,20 @@ mod tests {
         assert!(error.contains("switch to global system audio"), "{}", error);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn application_selection_with_serial_is_valid() {
         assert!(application_selection(Some(187)).validate().is_ok());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn application_selection_is_rejected_on_unsupported_platforms() {
+        let error = application_selection(Some(187))
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("only available on Linux"), "{}", error);
     }
 
     #[test]

@@ -12,6 +12,7 @@ import Analytics from '@/lib/analytics';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { ApplicationAudioPicker } from './ApplicationAudioPicker';
 import { AudioCaptureSelection } from '@/services/recordingService';
+import { useIsLinux } from '@/hooks/usePlatform';
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -46,6 +47,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
   const isPaused = recordingState.isPaused;
+  // Selected application/media stream capture is a PipeWire (Linux) feature
+  const isApplicationAudioSupported = useIsLinux();
 
   const [showPlayback, setShowPlayback] = useState(false);
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
@@ -351,7 +354,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   return (
     <TooltipProvider>
       <div className="flex flex-col space-y-2">
-        {showAudioPicker && !isRecording && !isProcessing && (
+        {isApplicationAudioSupported && showAudioPicker && !isRecording && !isProcessing && (
           <ApplicationAudioPicker
             onStart={handleStartRecording}
             onCancel={() => setShowAudioPicker(false)}
@@ -429,23 +432,25 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                         </TooltipContent>
                       </Tooltip>
 
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={() => {
-                              Analytics.trackButtonClick('open_application_audio_picker', 'recording_controls');
-                              setShowAudioPicker((current) => !current);
-                            }}
-                            disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
-                            className="w-10 h-10 flex items-center justify-center rounded-full border-2 border-gray-300 bg-white text-gray-600 transition-colors hover:border-gray-400 hover:bg-gray-50 disabled:opacity-50"
-                          >
-                            <AppWindow size={16} />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Record one application&apos;s audio stream</p>
-                        </TooltipContent>
-                      </Tooltip>
+                      {isApplicationAudioSupported && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              onClick={() => {
+                                Analytics.trackButtonClick('open_application_audio_picker', 'recording_controls');
+                                setShowAudioPicker((current) => !current);
+                              }}
+                              disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
+                              className="w-10 h-10 flex items-center justify-center rounded-full border-2 border-gray-300 bg-white text-gray-600 transition-colors hover:border-gray-400 hover:bg-gray-50 disabled:opacity-50"
+                            >
+                              <AppWindow size={16} />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Record one application&apos;s audio stream</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                     </>
                   ) : (
                     // Recording controls (pause/resume + stop)

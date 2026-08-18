@@ -129,10 +129,7 @@ pub fn select_capture_target(
 /// Stable identity only: application and process names survive node
 /// recreation, while media.name is volatile (tab or track titles) and must
 /// not invalidate a serial match.
-fn has_stable_identity(
-    stream: &ApplicationAudioStream,
-    selection: &AudioCaptureSelection,
-) -> bool {
+fn has_stable_identity(stream: &ApplicationAudioStream, selection: &AudioCaptureSelection) -> bool {
     selection
         .application_name
         .as_deref()

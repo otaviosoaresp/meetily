@@ -130,16 +130,16 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
 
-    const setupRecordingErrorListener = async () => {
-      unlistenFn = await listen<string>('recording-error', (event) => {
-        toast.error('Recording audio source unavailable', {
+    const setupSelectedAudioUnavailableListener = async () => {
+      unlistenFn = await listen<string>('selected-audio-unavailable', (event) => {
+        toast.error('Selected application audio unavailable', {
           description: String(event.payload),
           duration: 8000,
         });
       });
     };
 
-    void setupRecordingErrorListener();
+    void setupSelectedAudioUnavailableListener();
     return () => unlistenFn?.();
   }, []);
 

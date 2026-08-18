@@ -164,7 +164,7 @@ mod linux {
                 crate::audio::devices::DeviceType::Output,
             ));
             let capture =
-                AudioCapture::new(device, state.clone(), 48000, 2, DeviceType::System, None);
+                AudioCapture::new(device, state, 48000, 2, DeviceType::System, None);
 
             let (ready_sender, ready_receiver) = std_mpsc::channel::<Result<()>>();
             let (stop_sender, stop_receiver) = pw::channel::channel::<()>();
@@ -176,7 +176,7 @@ mod linux {
                     if let Err(error) =
                         run_capture_thread(target_serial, capture, stop_receiver, ready_sender)
                     {
-                        state.report_error(AudioError::SelectedAudioUnavailable(error.to_string()));
+                        warn!("PipeWire capture thread exited with error: {}", error);
                     }
                 })
                 .context("Failed to start PipeWire capture thread")?;

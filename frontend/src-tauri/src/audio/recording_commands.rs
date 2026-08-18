@@ -66,6 +66,19 @@ pub struct TranscriptionStatus {
 // RECORDING COMMANDS
 // ============================================================================
 
+/// Emit selected application/media stream failures on a dedicated event;
+/// all other audio errors keep the generic recording-error channel.
+fn emit_audio_error<R: Runtime>(app: &AppHandle<R>, error: &super::recording_state::AudioError) {
+    match error {
+        super::recording_state::AudioError::SelectedAudioUnavailable(_) => {
+            let _ = app.emit("selected-audio-unavailable", error.user_message());
+        }
+        _ => {
+            let _ = app.emit("recording-error", error.user_message());
+        }
+    }
+}
+
 /// Resolve the microphone device: Preference → Default → Error
 fn resolve_microphone_device(preferred_mic_name: Option<String>) -> Result<Arc<super::devices::AudioDevice>, String> {
     match preferred_mic_name {
@@ -236,7 +249,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Set up error callback
     let app_for_error = app.clone();
     manager.set_error_callback(move |error| {
-        let _ = app_for_error.emit("recording-error", error.user_message());
+        emit_audio_error(&app_for_error, error);
     });
 
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
@@ -421,7 +434,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Set up error callback
     let app_for_error = app.clone();
     manager.set_error_callback(move |error| {
-        let _ = app_for_error.emit("recording-error", error.user_message());
+        emit_audio_error(&app_for_error, error);
     });
 
     // Start recording with specified devices and auto_save setting

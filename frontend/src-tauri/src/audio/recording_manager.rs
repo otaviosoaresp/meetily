@@ -10,7 +10,7 @@ use super::devices::get_safe_recording_devices_macos;
 
 #[cfg(not(target_os = "macos"))]
 use super::devices::{default_input_device, default_output_device};
-use super::recording_state::{RecordingState, AudioChunk, DeviceType as RecordingDeviceType};
+use super::recording_state::{RecordingState, AudioChunk, AudioError, DeviceType as RecordingDeviceType};
 use super::pipeline::AudioPipelineManager;
 use super::stream::AudioStreamManager;
 use super::recording_saver::RecordingSaver;
@@ -533,13 +533,27 @@ impl RecordingManager {
                     self.stream_manager.stop_streams()?;
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                    self.stream_manager.start_streams(Some(device_arc.clone()), system_device, None, self.capture_selection.clone()).await?;
+                    match self.stream_manager.start_streams(Some(device_arc.clone()), system_device, None, self.capture_selection.clone()).await {
+                        Ok(()) => {}
+                        Err(e) if self.capture_selection.is_application()
+                            && self.stream_manager.has_microphone_stream() =>
+                        {
+                            warn!("Selected application stream could not be reacquired during microphone reconnect: {}", e);
+                            self.state.report_error(AudioError::SelectedAudioUnavailable(e.to_string()));
+                        }
+                        Err(e) => return Err(e),
+                    }
                     self.state.set_microphone_device(device_arc);
 
                     info!("✅ Microphone reconnected successfully");
                     Ok(true)
                 }
                 DeviceMonitorType::SystemAudio => {
+                    if self.capture_selection.is_application() {
+                        warn!("System audio reconnect is not applicable while capturing a selected application stream");
+                        return Ok(false);
+                    }
+
                     // Stop existing system audio stream and start new one
                     let microphone_device = self.state.get_microphone_device();
 

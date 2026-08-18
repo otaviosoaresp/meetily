@@ -515,6 +515,11 @@ impl AudioStreamManager {
     pub fn has_active_streams(&self) -> bool {
         self.microphone_stream.is_some() || self.system_stream.is_some()
     }
+
+    /// Check if the microphone stream is active
+    pub fn has_microphone_stream(&self) -> bool {
+        self.microphone_stream.is_some()
+    }
 }
 
 impl Drop for AudioStreamManager {

@@ -66,6 +66,51 @@ pub struct TranscriptionStatus {
 // RECORDING COMMANDS
 // ============================================================================
 
+/// Resolve the microphone device: Preference → Default → Error
+fn resolve_microphone_device(preferred_mic_name: Option<String>) -> Result<Arc<super::devices::AudioDevice>, String> {
+    match preferred_mic_name {
+        Some(pref_name) => {
+            info!("🎤 Attempting to use preferred microphone: '{}'", pref_name);
+            match parse_audio_device(&pref_name) {
+                Ok(device) => {
+                    info!("✅ Using preferred microphone: '{}'", device.name);
+                    Ok(Arc::new(device))
+                }
+                Err(e) => {
+                    warn!("⚠️ Preferred microphone '{}' not available: {}", pref_name, e);
+                    warn!("   Falling back to system default microphone...");
+                    match default_input_device() {
+                        Ok(device) => {
+                            info!("✅ Using default microphone: '{}'", device.name);
+                            Ok(Arc::new(device))
+                        }
+                        Err(default_err) => {
+                            error!("❌ No microphone available (preferred and default both failed)");
+                            Err(format!(
+                                "No microphone device available. Preferred device '{}' not found, and default microphone unavailable: {}",
+                                pref_name, default_err
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+        None => {
+            info!("🎤 No microphone preference set, using system default");
+            match default_input_device() {
+                Ok(device) => {
+                    info!("✅ Using default microphone: '{}'", device.name);
+                    Ok(Arc::new(device))
+                }
+                Err(e) => {
+                    error!("❌ No default microphone available");
+                    Err(format!("No microphone device available: {}", e))
+                }
+            }
+        }
+    }
+}
+
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     start_recording_with_meeting_name(app, None, AudioCaptureSelection::global()).await
@@ -131,47 +176,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // ============================================================================
     // MICROPHONE DEVICE RESOLUTION: Preference → Default → Error
     // ============================================================================
-    let microphone_device = match preferred_mic_name {
-        Some(pref_name) => {
-            info!("🎤 Attempting to use preferred microphone: '{}'", pref_name);
-            match parse_audio_device(&pref_name) {
-                Ok(device) => {
-                    info!("✅ Using preferred microphone: '{}'", device.name);
-                    Some(Arc::new(device))
-                }
-                Err(e) => {
-                    warn!("⚠️ Preferred microphone '{}' not available: {}", pref_name, e);
-                    warn!("   Falling back to system default microphone...");
-                    match default_input_device() {
-                        Ok(device) => {
-                            info!("✅ Using default microphone: '{}'", device.name);
-                            Some(Arc::new(device))
-                        }
-                        Err(default_err) => {
-                            error!("❌ No microphone available (preferred and default both failed)");
-                            return Err(format!(
-                                "No microphone device available. Preferred device '{}' not found, and default microphone unavailable: {}",
-                                pref_name, default_err
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        None => {
-            info!("🎤 No microphone preference set, using system default");
-            match default_input_device() {
-                Ok(device) => {
-                    info!("✅ Using default microphone: '{}'", device.name);
-                    Some(Arc::new(device))
-                }
-                Err(e) => {
-                    error!("❌ No default microphone available");
-                    return Err(format!("No microphone device available: {}", e));
-                }
-            }
-        }
-    };
+    let microphone_device = Some(resolve_microphone_device(preferred_mic_name)?);
 
     // ============================================================================
     // SYSTEM AUDIO DEVICE RESOLUTION: Preference → Default → None (optional)
@@ -362,11 +367,27 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     }
     info!("✅ Transcription model validation passed");
 
+    // Load recording preferences to get auto_save AND device preferences
+    let (auto_save, preferred_mic_name) =
+        match super::recording_preferences::load_recording_preferences(&app).await {
+            Ok(prefs) => {
+                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}",
+                      prefs.auto_save, prefs.preferred_mic_device);
+                (prefs.auto_save, prefs.preferred_mic_device)
+            }
+            Err(e) => {
+                warn!("Failed to load recording preferences, defaulting to auto_save=true: {}", e);
+                (true, None)
+            }
+        };
+
     // Parse devices
     let mic_device = if let Some(ref name) = mic_device_name {
         Some(Arc::new(parse_audio_device(name).map_err(|e| {
             format!("Invalid microphone device '{}': {}", name, e)
         })?))
+    } else if capture_selection.is_application() {
+        Some(resolve_microphone_device(preferred_mic_name)?)
     } else {
         None
     };
@@ -386,18 +407,6 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Create new recording manager
     let mut manager = RecordingManager::new();
-
-    // Load recording preferences to check auto_save setting
-    let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
-        Ok(prefs) => {
-            info!("📋 Loaded recording preferences: auto_save={}", prefs.auto_save);
-            prefs.auto_save
-        }
-        Err(e) => {
-            warn!("Failed to load recording preferences, defaulting to auto_save=true: {}", e);
-            true // Default to saving if preferences can't be loaded
-        }
-    };
 
     // Always ensure a meeting name is set so incremental saver initializes
     let effective_meeting_name = meeting_name.clone().unwrap_or_else(|| {

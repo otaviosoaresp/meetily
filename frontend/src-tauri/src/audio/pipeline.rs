@@ -1209,6 +1209,18 @@ mod tests {
     /// Feed mic and system sample streams through a real AudioPipeline (real VAD)
     /// and return (transcription chunks, mixed recording chunks).
     async fn run_pipeline_with(mic: Vec<f32>, system: Vec<f32>) -> (Vec<AudioChunk>, Vec<AudioChunk>) {
+        run_pipeline_with_chunks(mic, system, 600).await
+    }
+
+    /// Same as [`run_pipeline_with`] but with an explicit send-chunk duration.
+    /// 30ms models real capture callbacks: both ring-buffer streams fill
+    /// together, so mixing windows fire without injecting the long zero runs
+    /// that the coarse 600ms alternating sends produce.
+    async fn run_pipeline_with_chunks(
+        mic: Vec<f32>,
+        system: Vec<f32>,
+        chunk_ms: usize,
+    ) -> (Vec<AudioChunk>, Vec<AudioChunk>) {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (transcription_tx, mut transcription_rx) = mpsc::unbounded_channel();
         let (recording_tx, mut recording_rx) = mpsc::unbounded_channel();
@@ -1227,13 +1239,13 @@ mod tests {
         );
         pipeline.recording_sender_for_mixed = Some(recording_tx);
 
-        let window = (TEST_SAMPLE_RATE as usize * 600) / 1000;
+        let window = (TEST_SAMPLE_RATE as usize * chunk_ms) / 1000;
         for (i, (mic_chunk, sys_chunk)) in mic.chunks(window).zip(system.chunks(window)).enumerate() {
             input_tx
                 .send(AudioChunk {
                     data: mic_chunk.to_vec(),
                     sample_rate: TEST_SAMPLE_RATE,
-                    timestamp: i as f64 * 0.6,
+                    timestamp: (i * chunk_ms) as f64 / 1000.0,
                     chunk_id: i as u64,
                     device_type: DeviceType::Microphone,
                     speaker_id: None,
@@ -1243,7 +1255,7 @@ mod tests {
                 .send(AudioChunk {
                     data: sys_chunk.to_vec(),
                     sample_rate: TEST_SAMPLE_RATE,
-                    timestamp: i as f64 * 0.6,
+                    timestamp: (i * chunk_ms) as f64 / 1000.0,
                     chunk_id: i as u64,
                     device_type: DeviceType::System,
                     speaker_id: None,
@@ -1300,6 +1312,25 @@ mod tests {
             "mixed recording path must still receive audio"
         );
         assert!(recording.iter().all(|c| c.sample_rate == TEST_SAMPLE_RATE));
+    }
+
+    #[tokio::test]
+    async fn short_word_microphone_speech_reaches_transcription() {
+        let mic = crate::audio::vad::test_fixtures::short_word_yeah(TEST_SAMPLE_RATE);
+        let system = vec![0.0f32; mic.len()];
+        let (transcription, recording) = run_pipeline_with_chunks(mic, system, 30).await;
+
+        assert!(
+            !transcription.is_empty(),
+            "short microphone word must not be dropped by the transient gate"
+        );
+        assert!(
+            transcription
+                .iter()
+                .all(|chunk| chunk.device_type == DeviceType::Microphone),
+            "silent system channel must not produce transcription chunks"
+        );
+        assert!(!recording.is_empty());
     }
 
     #[tokio::test]

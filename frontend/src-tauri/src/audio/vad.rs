@@ -15,31 +15,60 @@ pub struct SpeechSegment {
 
 const VAD_PRE_SPEECH_PAD_SAMPLES: usize = 16_000 * 300 / 1_000;
 const VAD_POST_SPEECH_PAD_SAMPLES: usize = 16_000 * 400 / 1_000;
+const MIC_TRANSIENT_DECAY_RATIO: f32 = 1.4;
 
-/// Identify the short, strongly decaying transients that Silero can classify
-/// as voiced but that are a common source of mic-only Whisper hallucinations.
-/// Padding is excluded so this does not mistake every short speech segment for
-/// a transient. Sustained speech and short words with a stable envelope remain
-/// eligible for transcription.
-pub fn is_likely_decaying_mic_transient(samples: &[f32]) -> bool {
+/// RMS envelope of the segment's active (un-padded) region: both halves plus
+/// the two leading quarters. Returns `None` when the segment is too short or
+/// too long to be a candidate mic transient.
+#[derive(Debug)]
+pub(crate) struct ActiveRegionEnvelope {
+    pub(crate) first_half_rms: f32,
+    pub(crate) last_half_rms: f32,
+    pub(crate) onset_quarter_rms: f32,
+    pub(crate) second_quarter_rms: f32,
+}
+
+pub(crate) fn active_region_envelope(samples: &[f32]) -> Option<ActiveRegionEnvelope> {
     let active_start = VAD_PRE_SPEECH_PAD_SAMPLES.min(samples.len());
     let active_end = samples.len().saturating_sub(VAD_POST_SPEECH_PAD_SAMPLES);
     if active_end <= active_start {
-        return false;
+        return None;
     }
 
     let active = &samples[active_start..active_end];
     if active.len() > 16_000 {
-        return false;
+        return None;
     }
 
-    let midpoint = active.len() / 2;
-    if midpoint == 0 {
-        return false;
+    let quarter = active.len() / 4;
+    if quarter == 0 {
+        return None;
     }
-    let first_rms = rms(&active[..midpoint]);
-    let last_rms = rms(&active[midpoint..]);
-    first_rms > 0.02 && first_rms > last_rms * 1.1
+    let midpoint = active.len() / 2;
+    Some(ActiveRegionEnvelope {
+        first_half_rms: rms(&active[..midpoint]),
+        last_half_rms: rms(&active[midpoint..]),
+        onset_quarter_rms: rms(&active[..quarter]),
+        second_quarter_rms: rms(&active[quarter..2 * quarter]),
+    })
+}
+
+/// Identify the short, strongly decaying transients that Silero can classify
+/// as voiced but that are a common source of mic-only Whisper hallucinations.
+/// Padding is excluded so this does not mistake every short speech segment for
+/// a transient. A transient is loudest at its onset and only decays from
+/// there, while short real words (sim, ok, yeah) rise from a voiced onset
+/// into the syllable nucleus, so segments whose second quarter outweighs the
+/// onset stay eligible for transcription even with a strong overall decay.
+pub fn is_likely_decaying_mic_transient(samples: &[f32]) -> bool {
+    match active_region_envelope(samples) {
+        Some(envelope) => {
+            envelope.first_half_rms > 0.02
+                && envelope.first_half_rms > envelope.last_half_rms * MIC_TRANSIENT_DECAY_RATIO
+                && envelope.onset_quarter_rms > envelope.second_quarter_rms
+        }
+        None => false,
+    }
 }
 
 fn rms(samples: &[f32]) -> f32 {
@@ -445,6 +474,160 @@ where
 }
 
 #[cfg(test)]
+pub(crate) mod test_fixtures {
+    fn voiced_sample(time: f32, f0: f32) -> f32 {
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let mut sample = 0.0f32;
+        for harmonic in 1..=20 {
+            let freq = f0 * harmonic as f32;
+            if freq > 4000.0 {
+                break;
+            }
+            let formant_gain = (-((freq - 700.0) / 350.0).powi(2)).exp()
+                + 0.7 * (-((freq - 1200.0) / 400.0).powi(2)).exp()
+                + 0.4 * (-((freq - 2600.0) / 600.0).powi(2)).exp()
+                + 0.05;
+            sample += formant_gain * (two_pi * freq * time).sin();
+        }
+        sample / 3.0
+    }
+
+    fn short_word_samples(
+        sample_rate: u32,
+        lead_in_seconds: f32,
+        word_seconds: f32,
+        total_seconds: f32,
+        envelope: fn(f32) -> f32,
+        f0: fn(f32) -> f32,
+    ) -> Vec<f32> {
+        let sample_rate_f32 = sample_rate as f32;
+        let mut samples = vec![0.0; (total_seconds * sample_rate_f32) as usize];
+        let start = (lead_in_seconds * sample_rate_f32) as usize;
+        let length = (word_seconds * sample_rate_f32) as usize;
+        for index in 0..length {
+            let time = index as f32 / sample_rate_f32;
+            let progress = time / word_seconds;
+            samples[start + index] =
+                (0.5 * envelope(progress) * voiced_sample(time, f0(progress))).clamp(-1.0, 1.0);
+        }
+        samples
+    }
+
+    /// "sim"-style clip: quiet fricative-like onset rising into the vowel
+    /// nucleus, then a nasal tail decaying to ~35%.
+    pub(crate) fn short_word_sim(sample_rate: u32) -> Vec<f32> {
+        short_word_samples(
+            sample_rate,
+            0.7,
+            0.38,
+            2.0,
+            |p| {
+                if p < 0.2 {
+                    0.5 * p / 0.2
+                } else if p < 0.35 {
+                    0.5 + 0.5 * (p - 0.2) / 0.15
+                } else if p < 0.6 {
+                    1.0
+                } else {
+                    1.0 - 0.65 * (p - 0.6) / 0.4
+                }
+            },
+            |p| 135.0 - 25.0 * p,
+        )
+    }
+
+    /// "ok"-style clip: weaker first syllable, stop-gap dip, stressed second
+    /// syllable with a word-final decay.
+    pub(crate) fn short_word_ok(sample_rate: u32) -> Vec<f32> {
+        short_word_samples(
+            sample_rate,
+            0.7,
+            0.45,
+            2.0,
+            |p| {
+                if p < 0.06 {
+                    0.7 * p / 0.06
+                } else if p < 0.35 {
+                    0.7
+                } else if p < 0.45 {
+                    0.25
+                } else if p < 0.8 {
+                    1.0
+                } else {
+                    1.0 - 0.45 * (p - 0.8) / 0.2
+                }
+            },
+            |p| 120.0 - 20.0 * p,
+        )
+    }
+
+    /// "yeah"-style clip: glide rising into the vowel nucleus, then a long
+    /// natural decline to ~30% - the envelope most likely to be mistaken for
+    /// a decaying transient.
+    pub(crate) fn short_word_yeah(sample_rate: u32) -> Vec<f32> {
+        short_word_samples(
+            sample_rate,
+            0.7,
+            0.45,
+            2.0,
+            |p| {
+                if p < 0.35 {
+                    0.2 + 0.8 * p / 0.35
+                } else if p < 0.55 {
+                    1.0
+                } else {
+                    1.0 - 0.7 * (p - 0.55) / 0.45
+                }
+            },
+            |p| 140.0 - 45.0 * p,
+        )
+    }
+
+    /// Drawn-out "yeah"-style clip ending exactly at the stream end, so
+    /// stopping the recording flush-forces the segment without pre/post
+    /// speech pads.
+    pub(crate) fn short_word_yeah_at_stream_end(sample_rate: u32) -> Vec<f32> {
+        short_word_samples(
+            sample_rate,
+            0.9,
+            0.70,
+            1.6,
+            |p| {
+                if p < 0.2 {
+                    0.25 + 0.75 * p / 0.2
+                } else if p < 0.35 {
+                    1.0
+                } else {
+                    1.0 - 0.7 * (p - 0.35) / 0.65
+                }
+            },
+            |p| 140.0 - 45.0 * p,
+        )
+    }
+
+    /// Sentence-final utterance (~1.2s) with a natural trailing decay, ending
+    /// exactly at the stream end so it is flush-forced without pads.
+    pub(crate) fn final_decaying_utterance_at_stream_end(sample_rate: u32) -> Vec<f32> {
+        short_word_samples(
+            sample_rate,
+            0.4,
+            1.2,
+            1.6,
+            |p| {
+                if p < 0.05 {
+                    p / 0.05
+                } else if p < 0.5 {
+                    1.0
+                } else {
+                    1.0 - 0.65 * (p - 0.5) / 0.5
+                }
+            },
+            |p| 130.0 - 35.0 * p,
+        )
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -502,6 +685,96 @@ mod tests {
             samples[start + index] = (voiced * envelope).clamp(-1.0, 1.0);
         }
         samples
+    }
+
+    fn vad_segments_16k(audio: &[f32]) -> Vec<SpeechSegment> {
+        let mut vad = ContinuousVadProcessor::new(16_000, 400).expect("VAD must initialize");
+        let mut segments = vad.process_audio(audio).expect("VAD processing must succeed");
+        segments.extend(vad.flush().expect("VAD flush must succeed"));
+        segments
+    }
+
+    #[test]
+    fn short_word_utterances_survive_the_mic_transient_gate() {
+        let fixtures: [(&str, Vec<f32>); 3] = [
+            ("sim", test_fixtures::short_word_sim(16_000)),
+            ("ok", test_fixtures::short_word_ok(16_000)),
+            ("yeah", test_fixtures::short_word_yeah(16_000)),
+        ];
+        for (word, audio) in fixtures {
+            let segments = vad_segments_16k(&audio);
+            assert!(
+                !segments.is_empty(),
+                "{word}: VAD must detect the short word as speech"
+            );
+            for segment in &segments {
+                let envelope = active_region_envelope(&segment.samples);
+                eprintln!("measured short word '{word}' envelope: {envelope:?}");
+                assert!(
+                    !is_likely_decaying_mic_transient(&segment.samples),
+                    "{word}: short word must survive the mic transient gate ({envelope:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn flush_forced_final_segments_survive_the_mic_transient_gate() {
+        let fixtures: [(&str, Vec<f32>); 2] = [
+            (
+                "yeah at stream end",
+                test_fixtures::short_word_yeah_at_stream_end(16_000),
+            ),
+            (
+                "decaying final utterance",
+                test_fixtures::final_decaying_utterance_at_stream_end(16_000),
+            ),
+        ];
+        for (name, audio) in fixtures {
+            let segments = vad_segments_16k(&audio);
+            assert!(
+                !segments.is_empty(),
+                "{name}: VAD must emit the flush-forced final segment"
+            );
+            for segment in &segments {
+                let envelope = active_region_envelope(&segment.samples);
+                eprintln!("measured flush fixture '{name}' envelope: {envelope:?}");
+                assert!(
+                    !is_likely_decaying_mic_transient(&segment.samples),
+                    "{name}: flush-forced final speech must survive the mic transient gate \
+                     ({envelope:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gate_boundary_separates_bark_transient_from_short_words_with_margin() {
+        let transient_segments = vad_segments_16k(&generate_voiced_transient(16_000));
+        assert!(!transient_segments.is_empty());
+        let bark = active_region_envelope(&transient_segments[0].samples)
+            .expect("transient segment must be a gate candidate");
+        eprintln!("measured bark envelope: {bark:?}");
+        assert!(
+            bark.first_half_rms > bark.last_half_rms * MIC_TRANSIENT_DECAY_RATIO * 1.2,
+            "bark-like transient decay must exceed the gate ratio ({MIC_TRANSIENT_DECAY_RATIO}x) \
+             with at least 20% margin: {bark:?}"
+        );
+        assert!(
+            bark.onset_quarter_rms > bark.second_quarter_rms * 1.1,
+            "bark-like transient must be onset-loaded with at least 10% margin: {bark:?}"
+        );
+
+        let yeah_segments = vad_segments_16k(&test_fixtures::short_word_yeah(16_000));
+        assert!(!yeah_segments.is_empty());
+        let yeah = active_region_envelope(&yeah_segments[0].samples)
+            .expect("short word segment must be a gate candidate");
+        eprintln!("measured yeah envelope: {yeah:?}");
+        assert!(
+            yeah.second_quarter_rms > yeah.onset_quarter_rms * 1.1,
+            "a decaying short word must rise into its syllable nucleus with at least 10% \
+             margin, which keeps it out of the onset-loaded transient shape: {yeah:?}"
+        );
     }
 
     #[test]

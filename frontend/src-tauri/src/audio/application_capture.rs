@@ -64,16 +64,26 @@ pub struct ApplicationAudioStream {
 }
 
 /// Pick the capture target from the currently visible streams: the saved
-/// object serial wins; if PipeWire recreated the node, the saved identity
-/// must match exactly one stream. Ambiguity or absence is an error because
-/// selected mode must never capture a different app or fall back silently.
+/// object serial wins, but only when the stream's stable identity still
+/// matches, because PipeWire serials reset on daemon restart and can
+/// collide with an unrelated node. Otherwise the saved identity must match
+/// exactly one stream. Ambiguity or absence is an error because selected
+/// mode must never capture a different app or fall back silently.
 pub fn select_capture_target(
     streams: Vec<ApplicationAudioStream>,
     selection: &AudioCaptureSelection,
 ) -> Result<ApplicationAudioStream> {
     if let Some(serial) = selection.object_serial {
         if let Some(stream) = streams.iter().find(|stream| stream.object_serial == serial) {
-            return Ok(stream.clone());
+            if has_stable_identity(stream, selection) {
+                return Ok(stream.clone());
+            }
+            log::warn!(
+                "PipeWire object serial {} now belongs to {} ({}), not the selected application; attempting identity reacquisition",
+                serial,
+                stream.application_name,
+                stream.process_name
+            );
         }
     }
 
@@ -114,6 +124,25 @@ pub fn select_capture_target(
             "The selected application exposes multiple matching media streams. Refresh the picker and choose one stream explicitly."
         )),
     }
+}
+
+/// Stable identity only: application and process names survive node
+/// recreation, while media.name is volatile (tab or track titles) and must
+/// not invalidate a serial match.
+fn has_stable_identity(
+    stream: &ApplicationAudioStream,
+    selection: &AudioCaptureSelection,
+) -> bool {
+    selection
+        .application_name
+        .as_deref()
+        .map(|value| value == stream.application_name)
+        .unwrap_or(false)
+        && selection
+            .process_name
+            .as_deref()
+            .map(|value| value == stream.process_name)
+            .unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -164,10 +193,6 @@ mod linux {
         stop_sender: Option<pw::channel::Sender<()>>,
         thread: Option<JoinHandle<()>>,
     }
-
-    // PipeWire's callback owns the stream on its dedicated thread. The handle
-    // and channel are the only values shared with the recording thread.
-    unsafe impl Send for PipeWireAudioStream {}
 
     impl PipeWireAudioStream {
         pub fn start(
@@ -651,6 +676,39 @@ mod tests {
         let target = select_capture_target(streams, &application_selection(Some(187))).unwrap();
         assert_eq!(target.object_serial, 187);
         assert_eq!(target.application_name, "Chromium");
+    }
+
+    #[test]
+    fn select_capture_target_never_captures_serial_collision_with_different_app() {
+        let streams = vec![stream(
+            187,
+            "speech-dispatcher-dummy",
+            "playback",
+            "sd_dummy",
+        )];
+        let error = select_capture_target(streams, &application_selection(Some(187)))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Switch to global system audio"), "{}", error);
+    }
+
+    #[test]
+    fn select_capture_target_reacquires_by_identity_when_serial_collides() {
+        let streams = vec![
+            stream(187, "speech-dispatcher-dummy", "playback", "sd_dummy"),
+            stream(311, "Chromium", "Playback", "vesktop.bin"),
+        ];
+        let target = select_capture_target(streams, &application_selection(Some(187))).unwrap();
+        assert_eq!(target.object_serial, 311);
+        assert_eq!(target.application_name, "Chromium");
+    }
+
+    #[test]
+    fn select_capture_target_keeps_serial_match_when_only_media_name_changed() {
+        let streams = vec![stream(187, "Chromium", "Some Tab Title", "vesktop.bin")];
+        let target = select_capture_target(streams, &application_selection(Some(187))).unwrap();
+        assert_eq!(target.object_serial, 187);
+        assert_eq!(target.media_name, "Some Tab Title");
     }
 
     #[test]

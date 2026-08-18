@@ -13,6 +13,42 @@ pub struct SpeechSegment {
     pub confidence: f32,
 }
 
+const VAD_PRE_SPEECH_PAD_SAMPLES: usize = 16_000 * 300 / 1_000;
+const VAD_POST_SPEECH_PAD_SAMPLES: usize = 16_000 * 400 / 1_000;
+
+/// Identify the short, strongly decaying transients that Silero can classify
+/// as voiced but that are a common source of mic-only Whisper hallucinations.
+/// Padding is excluded so this does not mistake every short speech segment for
+/// a transient. Sustained speech and short words with a stable envelope remain
+/// eligible for transcription.
+pub fn is_likely_decaying_mic_transient(samples: &[f32]) -> bool {
+    let active_start = VAD_PRE_SPEECH_PAD_SAMPLES.min(samples.len());
+    let active_end = samples.len().saturating_sub(VAD_POST_SPEECH_PAD_SAMPLES);
+    if active_end <= active_start {
+        return false;
+    }
+
+    let active = &samples[active_start..active_end];
+    if active.len() > 16_000 {
+        return false;
+    }
+
+    let midpoint = active.len() / 2;
+    if midpoint == 0 {
+        return false;
+    }
+    let first_rms = rms(&active[..midpoint]);
+    let last_rms = rms(&active[midpoint..]);
+    first_rms > 0.02 && first_rms > last_rms * 1.1
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
 /// Processes audio in 30ms chunks but returns complete speech segments
 pub struct ContinuousVadProcessor {
     session: VadSession,
@@ -446,6 +482,66 @@ mod tests {
         samples
     }
 
+    fn generate_voiced_transient(sample_rate: u32) -> Vec<f32> {
+        let sample_rate_f32 = sample_rate as f32;
+        let mut samples = vec![0.0; (2.0 * sample_rate_f32) as usize];
+        let start = (0.7 * sample_rate_f32) as usize;
+        let length = (0.55 * sample_rate_f32) as usize;
+        for index in 0..length {
+            let time = index as f32 / sample_rate_f32;
+            let attack = (time / 0.025).min(1.0);
+            let decay = (1.0 - (time - 0.025).max(0.0) / 0.525).max(0.0).powf(0.45);
+            let envelope = attack * decay;
+            let voiced = [(180.0, 0.42), (360.0, 0.28), (540.0, 0.18), (720.0, 0.10)]
+                .into_iter()
+                .map(|(frequency, amplitude)| {
+                    amplitude
+                        * (2.0 * std::f32::consts::PI * frequency * time).sin()
+                })
+                .sum::<f32>();
+            samples[start + index] = (voiced * envelope).clamp(-1.0, 1.0);
+        }
+        samples
+    }
+
+    #[test]
+    fn decaying_mic_transient_gate_rejects_false_positive_and_keeps_speech() {
+        let mut vad = ContinuousVadProcessor::new(16_000, 400)
+            .expect("VAD must initialize");
+        let transient_audio = generate_voiced_transient(16_000);
+        let mut transient_segments = vad
+            .process_audio(&transient_audio)
+            .expect("transient VAD processing must succeed");
+        transient_segments.extend(
+            vad
+                .flush()
+                .expect("transient VAD flush must succeed"),
+        );
+        assert!(
+            !transient_segments.is_empty(),
+            "fixture must reproduce the VAD false positive"
+        );
+        assert!(is_likely_decaying_mic_transient(&transient_segments[0].samples));
+
+        let mut speech_vad = ContinuousVadProcessor::new(16_000, 400)
+            .expect("VAD must initialize");
+        let speech = generate_test_audio_with_speech(5.0, 16_000);
+        let mut speech_segments = speech_vad
+            .process_audio(&speech)
+            .expect("speech VAD processing must succeed");
+        speech_segments.extend(speech_vad.flush().expect("speech VAD flush must succeed"));
+        assert!(
+            !speech_segments.is_empty(),
+            "continuous speech must remain detectable"
+        );
+        assert!(
+            speech_segments
+                .iter()
+                .all(|segment| !is_likely_decaying_mic_transient(&segment.samples)),
+            "continuous speech must not be classified as a decaying transient"
+        );
+    }
+
     #[test]
     fn test_vad_chunked_vs_single_processing() {
         // Generate 60 seconds of audio with speech patterns at 16kHz
@@ -592,4 +688,3 @@ mod tests {
         }
     }
 }
-

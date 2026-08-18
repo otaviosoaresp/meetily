@@ -12,7 +12,7 @@ use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolat
 use super::devices::AudioDevice;
 use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
-use super::vad::{ContinuousVadProcessor, SpeechSegment};
+use super::vad::{is_likely_decaying_mic_transient, ContinuousVadProcessor, SpeechSegment};
 use super::diarization::StreamingSpeakerDiarizer;
 
 /// Ring buffer for synchronized audio mixing
@@ -952,6 +952,17 @@ impl AudioPipeline {
                 continue;
             }
 
+            if device_type == DeviceType::Microphone
+                && is_likely_decaying_mic_transient(&segment.samples)
+            {
+                info!(
+                    "⏭️ Dropping decaying microphone transient: {:.1}ms, {} samples",
+                    duration_ms,
+                    segment.samples.len()
+                );
+                continue;
+            }
+
             info!(
                 "📤 Sending {}VAD segment: {:.1}ms, {} samples ({:?})",
                 if is_final { "final " } else { "" },
@@ -1173,6 +1184,28 @@ mod tests {
             .collect()
     }
 
+    fn voiced_transient_samples() -> Vec<f32> {
+        let sample_rate = TEST_SAMPLE_RATE as f32;
+        let mut samples = vec![0.0; (2.0 * sample_rate) as usize];
+        let start = (0.7 * sample_rate) as usize;
+        let length = (0.55 * sample_rate) as usize;
+        for index in 0..length {
+            let time = index as f32 / sample_rate;
+            let attack = (time / 0.025).min(1.0);
+            let decay = (1.0 - (time - 0.025).max(0.0) / 0.525).max(0.0).powf(0.45);
+            let envelope = attack * decay;
+            let voiced = [(180.0, 0.42), (360.0, 0.28), (540.0, 0.18), (720.0, 0.10)]
+                .into_iter()
+                .map(|(frequency, amplitude)| {
+                    amplitude
+                        * (2.0 * std::f32::consts::PI * frequency * time).sin()
+                })
+                .sum::<f32>();
+            samples[start + index] = (voiced * envelope).clamp(-1.0, 1.0);
+        }
+        samples
+    }
+
     /// Feed mic and system sample streams through a real AudioPipeline (real VAD)
     /// and return (transcription chunks, mixed recording chunks).
     async fn run_pipeline_with(mic: Vec<f32>, system: Vec<f32>) -> (Vec<AudioChunk>, Vec<AudioChunk>) {
@@ -1267,6 +1300,22 @@ mod tests {
             "mixed recording path must still receive audio"
         );
         assert!(recording.iter().all(|c| c.sample_rate == TEST_SAMPLE_RATE));
+    }
+
+    #[tokio::test]
+    async fn decaying_microphone_transient_is_not_sent_to_transcription() {
+        let (transcription, recording) =
+            run_pipeline_with(voiced_transient_samples(), vec![0.0; 2 * TEST_SAMPLE_RATE as usize])
+                .await;
+
+        assert!(
+            transcription.is_empty(),
+            "decaying microphone transient must not reach Whisper"
+        );
+        assert!(
+            !recording.is_empty(),
+            "noise filtering must not stop the recording path"
+        );
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use log::{info, warn};
 use pyannote_rs::{EmbeddingExtractor, EmbeddingManager};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -22,9 +23,13 @@ pub const EMBEDDING_MODEL_URL: &str = "https://github.com/thewh1teagle/pyannote-
 const DEFAULT_MAX_SPEAKERS: usize = 16;
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.5;
 const MIN_EMBEDDING_SAMPLES: usize = 16_000;
-/// Bound the audio fed to one embedding so a single long VAD segment cannot
-/// stall the pipeline task for its full inference time.
-const MAX_EMBEDDING_SAMPLES: usize = 16_000 * 15;
+/// Keep each embedding focused on one conversational turn. A VAD segment can
+/// be long when multiple remote speakers talk without a pause, so it must not
+/// be represented by one mixed embedding.
+const EMBEDDING_WINDOW_SAMPLES: usize = 16_000 * 4;
+/// Bound live inference cost while still sampling enough of a long segment to
+/// determine whether one speaker is dominant.
+const MAX_EMBEDDING_WINDOWS: usize = 4;
 const DOWNLOAD_PROGRESS_EVENT: &str = "diarization-model-download-progress";
 const FALLBACK_MODEL_TOTAL_MB: f64 = 28.0;
 
@@ -65,7 +70,7 @@ impl StreamingSpeakerDiarizer {
     /// Short segments are deliberately left unlabeled because their embedding
     /// is not reliable enough to create or move a cluster.
     pub fn identify(&mut self, samples: &[f32], sample_rate: u32) -> Option<u32> {
-        let mut samples_16k = if sample_rate == 16_000 {
+        let samples_16k = if sample_rate == 16_000 {
             samples.to_vec()
         } else {
             crate::audio::audio_processing::resample_audio(samples, sample_rate, 16_000)
@@ -74,8 +79,22 @@ impl StreamingSpeakerDiarizer {
         if samples_16k.len() < MIN_EMBEDDING_SAMPLES {
             return None;
         }
-        samples_16k.truncate(MAX_EMBEDDING_SAMPLES);
 
+        let assignments: Vec<u32> = samples_16k
+            .chunks(EMBEDDING_WINDOW_SAMPLES)
+            .take(MAX_EMBEDDING_WINDOWS)
+            .filter_map(|window| {
+                if window.len() < MIN_EMBEDDING_SAMPLES {
+                    return None;
+                }
+                self.identify_window(window)
+            })
+            .collect();
+
+        dominant_speaker(&assignments)
+    }
+
+    fn identify_window(&mut self, samples_16k: &[f32]) -> Option<u32> {
         let pcm: Vec<i16> = samples_16k
             .iter()
             .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
@@ -96,6 +115,18 @@ impl StreamingSpeakerDiarizer {
 
         speaker_id.map(|id| id.saturating_sub(1) as u32)
     }
+}
+
+fn dominant_speaker(assignments: &[u32]) -> Option<u32> {
+    let mut counts = BTreeMap::<u32, usize>::new();
+    for speaker_id in assignments {
+        *counts.entry(*speaker_id).or_default() += 1;
+    }
+
+    let (speaker_id, count) = counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)?;
+    (count * 2 > assignments.len()).then_some(speaker_id)
 }
 
 /// Resolve the per-user model location used by the Tauri commands and the
@@ -400,5 +431,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A long VAD segment may contain several remote speakers. It must remain
+    /// unlabeled when no speaker has a strict majority instead of inheriting a
+    /// cluster from the first few seconds of mixed audio.
+    #[test]
+    #[ignore = "needs MEETILY_DIARIZATION_TEST_ASSETS with the ONNX model and sample wav"]
+    fn real_model_does_not_collapse_mixed_long_segments() {
+        let Ok(assets) = std::env::var("MEETILY_DIARIZATION_TEST_ASSETS") else {
+            eprintln!("MEETILY_DIARIZATION_TEST_ASSETS not set; nothing to do");
+            return;
+        };
+        let assets = PathBuf::from(assets);
+        let samples = read_mono_16k_wav(&assets.join("6_speakers.wav"));
+        let mut diarizer = StreamingSpeakerDiarizer::new(&assets.join(EMBEDDING_MODEL_FILE))
+            .expect("embedding model must load on CPU");
+
+        let assignments: Vec<Option<u32>> = samples
+            .chunks(16 * 16_000)
+            .map(|chunk| diarizer.identify(chunk, 16_000))
+            .collect();
+        assert!(
+            assignments.iter().any(Option::is_none),
+            "mixed long segments must stay plain Outros when no speaker dominates: {assignments:?}"
+        );
     }
 }

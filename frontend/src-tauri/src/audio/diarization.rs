@@ -76,6 +76,10 @@ impl SpeakerClusters {
             return Some(best_index as u32);
         }
 
+        if self.clusters.len() >= DEFAULT_MAX_SPEAKERS {
+            return None;
+        }
+
         if let Some(pending) = pending {
             if cosine_similarity(&pending, &embedding) >= PENDING_SPEAKER_CONFIRMATION_SIMILARITY {
                 return Some(self.add_cluster(embedding));
@@ -202,13 +206,6 @@ impl StreamingSpeakerDiarizer {
                 return None;
             }
         };
-
-        if self.speakers.clusters.len() >= DEFAULT_MAX_SPEAKERS {
-            return self
-                .speakers
-                .best_match(&embedding)
-                .map(|(id, _)| id as u32);
-        }
 
         self.speakers.assign(embedding)
     }
@@ -481,6 +478,26 @@ mod tests {
         assert_eq!(clusters.assign(vec![0.45, 0.89]), None);
         assert_eq!(clusters.assign(vec![0.9, 0.44]), Some(0));
         assert_eq!(clusters.clusters.len(), 1);
+    }
+
+    #[test]
+    fn at_cluster_cap_dissimilar_embeddings_stay_unlabeled() {
+        let mut clusters = SpeakerClusters::default();
+        for index in 0..DEFAULT_MAX_SPEAKERS {
+            let mut embedding = vec![0.0; DEFAULT_MAX_SPEAKERS + 1];
+            embedding[index] = 1.0;
+            assert_eq!(clusters.assign(embedding), Some(index as u32));
+        }
+        assert_eq!(clusters.clusters.len(), DEFAULT_MAX_SPEAKERS);
+
+        let mut new_speaker = vec![0.0; DEFAULT_MAX_SPEAKERS + 1];
+        new_speaker[DEFAULT_MAX_SPEAKERS] = 1.0;
+        assert_eq!(clusters.assign(new_speaker), None);
+        assert_eq!(clusters.clusters.len(), DEFAULT_MAX_SPEAKERS);
+
+        let mut known_speaker = vec![0.0; DEFAULT_MAX_SPEAKERS + 1];
+        known_speaker[0] = 1.0;
+        assert_eq!(clusters.assign(known_speaker), Some(0));
     }
 
     #[test]

@@ -95,7 +95,7 @@ export class RecordingService {
       mic_device_name: micDeviceName,
       system_device_name: systemDeviceName,
       meeting_name: meetingName,
-      capture_selection: captureSelection
+      captureSelection: captureSelection
     });
   }
 

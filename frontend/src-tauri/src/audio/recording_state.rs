@@ -69,19 +69,22 @@ impl AudioError {
     }
 
     /// Get user-friendly error message
-    pub fn user_message(&self) -> &'static str {
+    pub fn user_message(&self) -> String {
         match self {
-            AudioError::DeviceDisconnected => "Audio device was disconnected",
-            AudioError::StreamFailed => "Audio stream encountered an error",
-            AudioError::ProcessingFailed => "Audio processing failed",
-            AudioError::TranscriptionFailed => "Speech transcription failed",
-            AudioError::ChannelClosed => "Audio channel was closed unexpectedly",
-            AudioError::InitializationFailed => "Failed to initialize audio system",
-            AudioError::ConfigurationError => "Audio configuration error",
-            AudioError::PermissionDenied => "Microphone permission denied",
-            AudioError::BufferOverflow => "Audio buffer overflow",
-            AudioError::SampleRateUnsupported => "Audio sample rate not supported",
-            AudioError::SelectedAudioUnavailable(_) => "Selected application audio is unavailable. Microphone recording continues; use global system audio for the next meeting.",
+            AudioError::DeviceDisconnected => "Audio device was disconnected".to_string(),
+            AudioError::StreamFailed => "Audio stream encountered an error".to_string(),
+            AudioError::ProcessingFailed => "Audio processing failed".to_string(),
+            AudioError::TranscriptionFailed => "Speech transcription failed".to_string(),
+            AudioError::ChannelClosed => "Audio channel was closed unexpectedly".to_string(),
+            AudioError::InitializationFailed => "Failed to initialize audio system".to_string(),
+            AudioError::ConfigurationError => "Audio configuration error".to_string(),
+            AudioError::PermissionDenied => "Microphone permission denied".to_string(),
+            AudioError::BufferOverflow => "Audio buffer overflow".to_string(),
+            AudioError::SampleRateUnsupported => "Audio sample rate not supported".to_string(),
+            AudioError::SelectedAudioUnavailable(detail) => format!(
+                "Selected application audio is unavailable. Microphone recording continues; use global system audio for the next meeting. Details: {}",
+                detail
+            ),
         }
     }
 }

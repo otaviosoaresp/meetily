@@ -703,6 +703,85 @@ mod tests {
         assert!(select_capture_target(streams, &selection).is_err());
     }
 
+    /// Executes the real `#[tauri::command]` wrapper through the mock runtime
+    /// to pin the IPC argument-key contract: a `capture_selection` parameter is
+    /// looked up under the camelCase wire key `captureSelection`, and a
+    /// snake_case key silently deserializes to `None`. The frontend invoke
+    /// payload in recordingService.ts must therefore use `captureSelection`.
+    mod ipc_boundary {
+        use super::super::{AudioCaptureMode, AudioCaptureSelection};
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+
+        #[tauri::command]
+        fn echo_capture_selection(
+            capture_selection: Option<AudioCaptureSelection>,
+        ) -> AudioCaptureSelection {
+            capture_selection.unwrap_or_else(AudioCaptureSelection::global)
+        }
+
+        fn invoke_with_body(body: serde_json::Value) -> AudioCaptureSelection {
+            let app = mock_builder()
+                .invoke_handler(tauri::generate_handler![echo_capture_selection])
+                .build(mock_context(noop_assets()))
+                .expect("failed to build mock Tauri app");
+            let webview =
+                tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+                    .build()
+                    .expect("failed to build mock webview");
+            #[cfg(windows)]
+            let local_origin = "http://tauri.localhost";
+            #[cfg(not(windows))]
+            let local_origin = "tauri://localhost";
+            get_ipc_response(
+                &webview,
+                InvokeRequest {
+                    cmd: "echo_capture_selection".to_string(),
+                    callback: CallbackFn(0),
+                    error: CallbackFn(1),
+                    url: local_origin.parse().expect("invalid mock url"),
+                    body: InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+            .expect("echo_capture_selection invoke failed")
+            .deserialize::<AudioCaptureSelection>()
+            .expect("echo response did not deserialize")
+        }
+
+        #[test]
+        fn application_selection_crosses_ipc_boundary_with_camel_case_key() {
+            let selection = invoke_with_body(serde_json::json!({
+                "captureSelection": {
+                    "mode": "application",
+                    "object_serial": 187,
+                    "application_name": "Chromium",
+                    "media_name": "Playback",
+                    "process_name": "vesktop.bin"
+                }
+            }));
+            assert_eq!(selection.mode, AudioCaptureMode::Application);
+            assert_eq!(selection.object_serial, Some(187));
+            assert_eq!(selection.application_name.as_deref(), Some("Chromium"));
+            assert_eq!(selection.media_name.as_deref(), Some("Playback"));
+            assert_eq!(selection.process_name.as_deref(), Some("vesktop.bin"));
+        }
+
+        #[test]
+        fn snake_case_wire_key_never_reaches_the_command_and_defaults_to_global() {
+            let selection = invoke_with_body(serde_json::json!({
+                "capture_selection": {
+                    "mode": "application",
+                    "object_serial": 187
+                }
+            }));
+            assert_eq!(selection.mode, AudioCaptureMode::Global);
+            assert!(selection.object_serial.is_none());
+        }
+    }
+
     /// Read-only introspection of the live PipeWire graph. Ignored by default
     /// so CI machines without a PipeWire session skip it; run locally with
     /// `cargo test -- --ignored live_pipewire`.

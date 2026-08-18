@@ -329,4 +329,76 @@ mod tests {
         let path = embedding_model_path(Path::new("/tmp/meetily/models"));
         assert!(path.ends_with("models/diarization/wespeaker_en_voxceleb_CAM++.onnx"));
     }
+
+    fn read_mono_16k_wav(path: &Path) -> Vec<f32> {
+        let bytes = std::fs::read(path).expect("sample wav must exist");
+        let data_offset = bytes
+            .windows(4)
+            .position(|window| window == b"data")
+            .expect("wav must contain a data chunk")
+            + 8;
+        bytes[data_offset..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / i16::MAX as f32)
+            .collect()
+    }
+
+    /// End-to-end check of the streaming path on the real CPU model: multi-
+    /// speaker speech must split into more than one meeting-local cluster, and
+    /// re-identifying earlier audio must return the cluster it was assigned
+    /// live (the labels users see as "Outros 1", "Outros 2", ...).
+    ///
+    /// Ignored by default: set MEETILY_DIARIZATION_TEST_ASSETS to a directory
+    /// containing `wespeaker_en_voxceleb_CAM++.onnx` and `6_speakers.wav`
+    /// (both published at github.com/thewh1teagle/pyannote-rs releases) and
+    /// run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "needs MEETILY_DIARIZATION_TEST_ASSETS with the ONNX model and sample wav"]
+    fn real_model_assigns_stable_incremental_clusters() {
+        let Ok(assets) = std::env::var("MEETILY_DIARIZATION_TEST_ASSETS") else {
+            eprintln!("MEETILY_DIARIZATION_TEST_ASSETS not set; nothing to do");
+            return;
+        };
+        let assets = PathBuf::from(assets);
+        let samples = read_mono_16k_wav(&assets.join("6_speakers.wav"));
+        let mut diarizer = StreamingSpeakerDiarizer::new(&assets.join(EMBEDDING_MODEL_FILE))
+            .expect("embedding model must load on CPU");
+
+        let window = 4 * 16_000;
+        let mut assignments = Vec::new();
+        for (index, chunk) in samples.chunks(window).enumerate() {
+            let speaker = diarizer.identify(chunk, 16_000);
+            let start = index * 4;
+            match speaker {
+                Some(id) => eprintln!(
+                    "segment {index:>2} ({start:>2}s-{:>2}s) -> Outros {}",
+                    start + 4,
+                    id + 1
+                ),
+                None => eprintln!("segment {index:>2} ({start:>2}s-...) -> unlabeled (Outros)"),
+            }
+            assignments.push((index, chunk, speaker));
+        }
+
+        let clusters: std::collections::BTreeSet<u32> = assignments
+            .iter()
+            .filter_map(|(_, _, speaker)| *speaker)
+            .collect();
+        eprintln!("distinct clusters: {clusters:?}");
+        assert!(
+            clusters.len() >= 2,
+            "multi-speaker speech must produce at least two clusters, got {clusters:?}"
+        );
+
+        for (index, chunk, speaker) in &assignments {
+            if let Some(expected) = speaker {
+                let again = diarizer.identify(chunk, 16_000);
+                assert_eq!(
+                    again,
+                    Some(*expected),
+                    "segment {index} must stay in its live-assigned cluster"
+                );
+            }
+        }
+    }
 }

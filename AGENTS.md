@@ -98,6 +98,8 @@ Raw Audio (Mic + System)
 
 **Transcript source labels**: the transcription worker (`audio/transcription/worker.rs`) maps `DeviceType::Microphone` → `"Você"` and `DeviceType::System` → `"Outros"` in `TranscriptUpdate.source`. The UI renders this as a speaker badge, and `recording_saver.rs` persists it in `TranscriptSegment.source` (segments without `source` deserialize as `"Audio"` via serde default and render without a badge). The SQLite `transcripts` table also stores it in a nullable `source` column (migration `20260817000000_add_transcript_source.sql`; `NULL` for legacy rows), so saved meetings reload with per-segment labels.
 
+**Speaker diarization (system channel)**: `audio/diarization.rs` embeds each system-channel VAD segment in real time (pyannote-rs, CPU) and assigns a zero-based meeting-local cluster carried as `AudioChunk.speaker_id` / `TranscriptUpdate.speaker_id`; microphone audio and short/ambiguous segments stay `None` and render as plain `"Outros"`. The UI labels system segments "Outros N" (`speaker_id + 1`) or the name from the `meeting_speakers` table; renaming a speaker and reassigning a segment go through `api_rename_speaker` / `api_reassign_transcript_speaker` (system segments only). Persistence uses the nullable `transcripts.speaker_id` column plus `meeting_speakers` (migration `20260817000001_add_speaker_assignments.sql`; legacy rows load with `NULL`). The embedding model auto-downloads on recording start to `<app-data>/models/diarization/wespeaker_en_voxceleb_CAM++.onnx` (`ensure_model_available`); recording never waits for the download, so system lines stay unlabeled until the model is installed.
+
 ### Audio Device Modularization (Recently Completed)
 
 **Context**: The audio system was refactored from a monolithic 1028-line `core.rs` file into focused modules. See [AUDIO_MODULARIZATION_PLAN.md](AUDIO_MODULARIZATION_PLAN.md) for details.
@@ -117,6 +119,7 @@ audio/
 │   ├── microphone.rs          # Microphone capture stream
 │   ├── system.rs              # System audio capture stream
 │   └── core_audio.rs          # macOS ScreenCaptureKit integration
+├── diarization.rs             # Real-time system-channel speaker clustering
 ├── pipeline.rs                # Audio mixing and VAD processing
 ├── recording_manager.rs       # High-level recording coordination
 ├── recording_commands.rs      # Tauri command interface
@@ -128,6 +131,7 @@ audio/
 - Microphone/speaker problems → `devices/microphone.rs` or `devices/speakers.rs`
 - Audio capture issues → `capture/microphone.rs` or `capture/system.rs`
 - Mixing/processing problems → `pipeline.rs`
+- Speaker labeling/diarization → `diarization.rs`
 - Recording workflow → `recording_manager.rs`
 
 ### Rust ↔ Frontend Communication (Tauri Architecture)

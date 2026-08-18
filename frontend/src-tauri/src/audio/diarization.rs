@@ -13,7 +13,7 @@ use pyannote_rs::EmbeddingExtractor;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::AsyncWriteExt;
 
@@ -70,15 +70,16 @@ impl SpeakerClusters {
         }
 
         let (best_index, best_similarity) = self.best_match(&embedding)?;
-        if let Some(pending) = self.pending.take() {
-            if cosine_similarity(&pending, &embedding) >= PENDING_SPEAKER_CONFIRMATION_SIMILARITY {
-                return Some(self.add_cluster(embedding));
-            }
-        }
-
+        let pending = self.pending.take();
         if best_similarity >= DEFAULT_SIMILARITY_THRESHOLD {
             self.update_cluster(best_index, &embedding);
             return Some(best_index as u32);
+        }
+
+        if let Some(pending) = pending {
+            if cosine_similarity(&pending, &embedding) >= PENDING_SPEAKER_CONFIRMATION_SIMILARITY {
+                return Some(self.add_cluster(embedding));
+            }
         }
 
         if best_similarity <= NEW_SPEAKER_MAX_SIMILARITY {
@@ -295,7 +296,12 @@ async fn run_model_download<R: Runtime>(
         .map_err(|error| format!("failed to create speaker model directory: {error}"))?;
 
     let temporary_path = model_path.with_extension("onnx.part");
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(3600))
+        .build()
+        .map_err(|error| format!("failed to build speaker model download client: {error}"))?;
+    let response = client
         .get(EMBEDDING_MODEL_URL)
         .send()
         .await
@@ -319,7 +325,12 @@ async fn run_model_download<R: Runtime>(
     let started_at = Instant::now();
     let mut last_progress_emit = Instant::now();
     let mut downloaded_bytes: u64 = 0;
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(30), stream.next())
+        .await
+        .map_err(|_| {
+            "speaker model download stalled: no data received for 30 seconds".to_string()
+        })?
+    {
         let chunk =
             chunk.map_err(|error| format!("speaker model download interrupted: {error}"))?;
         output
@@ -461,6 +472,15 @@ mod tests {
         assert_eq!(clusters.assign(vec![1.0, 0.0]), Some(0));
         assert_eq!(clusters.assign(vec![0.45, 0.89]), None);
         assert_eq!(clusters.assign(vec![0.45, 0.89]), Some(1));
+    }
+
+    #[test]
+    fn strong_existing_match_wins_over_pending_confirmation() {
+        let mut clusters = SpeakerClusters::default();
+        assert_eq!(clusters.assign(vec![1.0, 0.0]), Some(0));
+        assert_eq!(clusters.assign(vec![0.45, 0.89]), None);
+        assert_eq!(clusters.assign(vec![0.9, 0.44]), Some(0));
+        assert_eq!(clusters.clusters.len(), 1);
     }
 
     #[test]

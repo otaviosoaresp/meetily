@@ -625,6 +625,29 @@ pub(crate) mod test_fixtures {
             |p| 130.0 - 35.0 * p,
         )
     }
+
+    /// Onset-loaded, monotonically decaying voiced burst (bark/thud-like):
+    /// the mic transient gate's positive fixture.
+    pub(crate) fn voiced_transient(sample_rate: u32) -> Vec<f32> {
+        let sample_rate_f32 = sample_rate as f32;
+        let mut samples = vec![0.0; (2.0 * sample_rate_f32) as usize];
+        let start = (0.7 * sample_rate_f32) as usize;
+        let length = (0.55 * sample_rate_f32) as usize;
+        for index in 0..length {
+            let time = index as f32 / sample_rate_f32;
+            let attack = (time / 0.025).min(1.0);
+            let decay = (1.0 - (time - 0.025).max(0.0) / 0.525).max(0.0).powf(0.45);
+            let envelope = attack * decay;
+            let voiced = [(180.0, 0.42), (360.0, 0.28), (540.0, 0.18), (720.0, 0.10)]
+                .into_iter()
+                .map(|(frequency, amplitude)| {
+                    amplitude * (2.0 * std::f32::consts::PI * frequency * time).sin()
+                })
+                .sum::<f32>();
+            samples[start + index] = (voiced * envelope).clamp(-1.0, 1.0);
+        }
+        samples
+    }
 }
 
 #[cfg(test)]
@@ -662,27 +685,6 @@ mod tests {
             // else: silence (already 0.0)
         }
 
-        samples
-    }
-
-    fn generate_voiced_transient(sample_rate: u32) -> Vec<f32> {
-        let sample_rate_f32 = sample_rate as f32;
-        let mut samples = vec![0.0; (2.0 * sample_rate_f32) as usize];
-        let start = (0.7 * sample_rate_f32) as usize;
-        let length = (0.55 * sample_rate_f32) as usize;
-        for index in 0..length {
-            let time = index as f32 / sample_rate_f32;
-            let attack = (time / 0.025).min(1.0);
-            let decay = (1.0 - (time - 0.025).max(0.0) / 0.525).max(0.0).powf(0.45);
-            let envelope = attack * decay;
-            let voiced = [(180.0, 0.42), (360.0, 0.28), (540.0, 0.18), (720.0, 0.10)]
-                .into_iter()
-                .map(|(frequency, amplitude)| {
-                    amplitude * (2.0 * std::f32::consts::PI * frequency * time).sin()
-                })
-                .sum::<f32>();
-            samples[start + index] = (voiced * envelope).clamp(-1.0, 1.0);
-        }
         samples
     }
 
@@ -751,7 +753,7 @@ mod tests {
 
     #[test]
     fn gate_boundary_separates_bark_transient_from_short_words_with_margin() {
-        let transient_segments = vad_segments_16k(&generate_voiced_transient(16_000));
+        let transient_segments = vad_segments_16k(&test_fixtures::voiced_transient(16_000));
         assert!(!transient_segments.is_empty());
         let bark = active_region_envelope(&transient_segments[0].samples)
             .expect("transient segment must be a gate candidate");
@@ -781,7 +783,7 @@ mod tests {
     #[test]
     fn decaying_mic_transient_gate_rejects_false_positive_and_keeps_speech() {
         let mut vad = ContinuousVadProcessor::new(16_000, 400).expect("VAD must initialize");
-        let transient_audio = generate_voiced_transient(16_000);
+        let transient_audio = test_fixtures::voiced_transient(16_000);
         let mut transient_segments = vad
             .process_audio(&transient_audio)
             .expect("transient VAD processing must succeed");

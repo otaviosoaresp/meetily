@@ -189,7 +189,8 @@ impl RecordingManager {
             }
 
             // Start recording with selected devices and auto_save setting
-            self.start_recording(microphone_device, system_device, auto_save, None).await
+            self.start_recording(microphone_device, system_device, auto_save, None)
+                .await
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -224,7 +225,8 @@ impl RecordingManager {
                 return Err(anyhow::anyhow!("No microphone device available"));
             }
 
-            self.start_recording(microphone_device, system_device, auto_save, None).await
+            self.start_recording(microphone_device, system_device, auto_save, None)
+                .await
         }
     }
 

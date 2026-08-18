@@ -254,14 +254,9 @@ mod tests {
         .expect("speaker cluster must be persisted");
         assert_eq!(speaker_count, 1);
 
-        let renamed = SpeakersRepository::rename(
-            &pool,
-            &meeting_id,
-            7,
-            Some("Ana".to_string()),
-        )
-        .await
-        .expect("speaker rename must succeed");
+        let renamed = SpeakersRepository::rename(&pool, &meeting_id, 7, Some("Ana".to_string()))
+            .await
+            .expect("speaker rename must succeed");
         assert_eq!(renamed.name.as_deref(), Some("Ana"));
 
         let system_transcript_id: String = sqlx::query_scalar(
@@ -271,21 +266,15 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("system transcript must exist");
-        SpeakersRepository::reassign_transcript(
-            &pool,
-            &meeting_id,
-            &system_transcript_id,
-            Some(8),
-        )
+        SpeakersRepository::reassign_transcript(&pool, &meeting_id, &system_transcript_id, Some(8))
             .await
             .expect("speaker reassignment must succeed");
-        let reassigned: Option<i64> = sqlx::query_scalar(
-            "SELECT speaker_id FROM transcripts WHERE id = ?",
-        )
-        .bind(&system_transcript_id)
-        .fetch_one(&pool)
-        .await
-        .expect("reassigned transcript must load");
+        let reassigned: Option<i64> =
+            sqlx::query_scalar("SELECT speaker_id FROM transcripts WHERE id = ?")
+                .bind(&system_transcript_id)
+                .fetch_one(&pool)
+                .await
+                .expect("reassigned transcript must load");
         assert_eq!(reassigned, Some(8));
     }
 
@@ -349,7 +338,10 @@ mod tests {
             .await
             .expect("legacy row must still load after migration");
         assert_eq!(legacy.source, None, "pre-migration rows must load with NULL source");
-        assert_eq!(legacy.speaker_id, None, "pre-migration rows must load with NULL speaker");
+        assert_eq!(
+            legacy.speaker_id, None,
+            "pre-migration rows must load with NULL speaker"
+        );
         assert_eq!(legacy.transcript, "gravado antes da migração");
     }
 }

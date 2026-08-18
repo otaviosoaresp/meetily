@@ -1,10 +1,10 @@
 // src/audio/mod.rs
 pub mod audio_processing;
 pub mod decoder;
+pub mod diarization;
 pub mod encode;
 pub mod ffmpeg;
 pub mod vad;
-pub mod diarization;
 
 // Modularized device management
 pub mod devices;

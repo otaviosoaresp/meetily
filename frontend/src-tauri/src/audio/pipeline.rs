@@ -1197,8 +1197,7 @@ mod tests {
             let voiced = [(180.0, 0.42), (360.0, 0.28), (540.0, 0.18), (720.0, 0.10)]
                 .into_iter()
                 .map(|(frequency, amplitude)| {
-                    amplitude
-                        * (2.0 * std::f32::consts::PI * frequency * time).sin()
+                    amplitude * (2.0 * std::f32::consts::PI * frequency * time).sin()
                 })
                 .sum::<f32>();
             samples[start + index] = (voiced * envelope).clamp(-1.0, 1.0);
@@ -1208,7 +1207,10 @@ mod tests {
 
     /// Feed mic and system sample streams through a real AudioPipeline (real VAD)
     /// and return (transcription chunks, mixed recording chunks).
-    async fn run_pipeline_with(mic: Vec<f32>, system: Vec<f32>) -> (Vec<AudioChunk>, Vec<AudioChunk>) {
+    async fn run_pipeline_with(
+        mic: Vec<f32>,
+        system: Vec<f32>,
+    ) -> (Vec<AudioChunk>, Vec<AudioChunk>) {
         run_pipeline_with_chunks(mic, system, 600).await
     }
 
@@ -1240,7 +1242,8 @@ mod tests {
         pipeline.recording_sender_for_mixed = Some(recording_tx);
 
         let window = (TEST_SAMPLE_RATE as usize * chunk_ms) / 1000;
-        for (i, (mic_chunk, sys_chunk)) in mic.chunks(window).zip(system.chunks(window)).enumerate() {
+        for (i, (mic_chunk, sys_chunk)) in mic.chunks(window).zip(system.chunks(window)).enumerate()
+        {
             input_tx
                 .send(AudioChunk {
                     data: mic_chunk.to_vec(),
@@ -1335,9 +1338,11 @@ mod tests {
 
     #[tokio::test]
     async fn decaying_microphone_transient_is_not_sent_to_transcription() {
-        let (transcription, recording) =
-            run_pipeline_with(voiced_transient_samples(), vec![0.0; 2 * TEST_SAMPLE_RATE as usize])
-                .await;
+        let (transcription, recording) = run_pipeline_with(
+            voiced_transient_samples(),
+            vec![0.0; 2 * TEST_SAMPLE_RATE as usize],
+        )
+        .await;
 
         assert!(
             transcription.is_empty(),

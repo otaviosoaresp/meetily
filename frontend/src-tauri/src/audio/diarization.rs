@@ -123,9 +123,7 @@ fn dominant_speaker(assignments: &[u32]) -> Option<u32> {
         *counts.entry(*speaker_id).or_default() += 1;
     }
 
-    let (speaker_id, count) = counts
-        .into_iter()
-        .max_by_key(|(_, count)| *count)?;
+    let (speaker_id, count) = counts.into_iter().max_by_key(|(_, count)| *count)?;
     (count * 2 > assignments.len()).then_some(speaker_id)
 }
 

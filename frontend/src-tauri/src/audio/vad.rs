@@ -678,8 +678,7 @@ mod tests {
             let voiced = [(180.0, 0.42), (360.0, 0.28), (540.0, 0.18), (720.0, 0.10)]
                 .into_iter()
                 .map(|(frequency, amplitude)| {
-                    amplitude
-                        * (2.0 * std::f32::consts::PI * frequency * time).sin()
+                    amplitude * (2.0 * std::f32::consts::PI * frequency * time).sin()
                 })
                 .sum::<f32>();
             samples[start + index] = (voiced * envelope).clamp(-1.0, 1.0);
@@ -689,7 +688,9 @@ mod tests {
 
     fn vad_segments_16k(audio: &[f32]) -> Vec<SpeechSegment> {
         let mut vad = ContinuousVadProcessor::new(16_000, 400).expect("VAD must initialize");
-        let mut segments = vad.process_audio(audio).expect("VAD processing must succeed");
+        let mut segments = vad
+            .process_audio(audio)
+            .expect("VAD processing must succeed");
         segments.extend(vad.flush().expect("VAD flush must succeed"));
         segments
     }
@@ -779,25 +780,21 @@ mod tests {
 
     #[test]
     fn decaying_mic_transient_gate_rejects_false_positive_and_keeps_speech() {
-        let mut vad = ContinuousVadProcessor::new(16_000, 400)
-            .expect("VAD must initialize");
+        let mut vad = ContinuousVadProcessor::new(16_000, 400).expect("VAD must initialize");
         let transient_audio = generate_voiced_transient(16_000);
         let mut transient_segments = vad
             .process_audio(&transient_audio)
             .expect("transient VAD processing must succeed");
-        transient_segments.extend(
-            vad
-                .flush()
-                .expect("transient VAD flush must succeed"),
-        );
+        transient_segments.extend(vad.flush().expect("transient VAD flush must succeed"));
         assert!(
             !transient_segments.is_empty(),
             "fixture must reproduce the VAD false positive"
         );
-        assert!(is_likely_decaying_mic_transient(&transient_segments[0].samples));
+        assert!(is_likely_decaying_mic_transient(
+            &transient_segments[0].samples
+        ));
 
-        let mut speech_vad = ContinuousVadProcessor::new(16_000, 400)
-            .expect("VAD must initialize");
+        let mut speech_vad = ContinuousVadProcessor::new(16_000, 400).expect("VAD must initialize");
         let speech = generate_test_audio_with_speech(5.0, 16_000);
         let mut speech_segments = speech_vad
             .process_audio(&speech)

@@ -452,3 +452,26 @@ impl Clone for RecordingStats {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_audio_unavailable_keeps_recording_active() {
+        let state = RecordingState::new();
+        state.start_recording().unwrap();
+        state.report_error(AudioError::SelectedAudioUnavailable(
+            "stream disappeared".to_string(),
+        ));
+        assert!(state.is_recording());
+    }
+
+    #[test]
+    fn other_non_recoverable_errors_still_stop_recording() {
+        let state = RecordingState::new();
+        state.start_recording().unwrap();
+        state.report_error(AudioError::PermissionDenied);
+        assert!(!state.is_recording());
+    }
+}

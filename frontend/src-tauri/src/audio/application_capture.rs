@@ -57,20 +57,77 @@ pub struct ApplicationAudioStream {
     pub node_name: String,
 }
 
+/// Pick the capture target from the currently visible streams: the saved
+/// object serial wins; if PipeWire recreated the node, the saved identity
+/// must match exactly one stream. Ambiguity or absence is an error because
+/// selected mode must never capture a different app or fall back silently.
+pub fn select_capture_target(
+    streams: Vec<ApplicationAudioStream>,
+    selection: &AudioCaptureSelection,
+) -> Result<ApplicationAudioStream> {
+    if let Some(serial) = selection.object_serial {
+        if let Some(stream) = streams.iter().find(|stream| stream.object_serial == serial) {
+            return Ok(stream.clone());
+        }
+    }
+
+    let matches: Vec<ApplicationAudioStream> = streams
+        .into_iter()
+        .filter(|stream| {
+            selection
+                .application_name
+                .as_deref()
+                .map(|value| value == stream.application_name)
+                .unwrap_or(false)
+                && selection
+                    .media_name
+                    .as_deref()
+                    .map(|value| value == stream.media_name)
+                    .unwrap_or(false)
+                && selection
+                    .process_name
+                    .as_deref()
+                    .map(|value| value == stream.process_name)
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    match matches.as_slice() {
+        [stream] => {
+            log::info!(
+                "Reacquired selected PipeWire stream by identity: serial {} -> {}",
+                selection.object_serial.unwrap_or_default(),
+                stream.object_serial
+            );
+            Ok(stream.clone())
+        }
+        [] => Err(anyhow!(
+            "The selected application/media stream is unavailable. Switch to global system audio or choose another stream."
+        )),
+        _ => Err(anyhow!(
+            "The selected application exposes multiple matching media streams. Refresh the picker and choose one stream explicitly."
+        )),
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{ApplicationAudioStream, AudioCaptureSelection};
     use crate::audio::pipeline::AudioCapture;
     use crate::audio::recording_state::{AudioError, DeviceType, RecordingState};
     use anyhow::{anyhow, Context, Result};
-    use log::{info, warn};
+    use log::warn;
     use pipewire as pw;
+    use pw::node::{Node, NodeInfoRef, NodeListener};
     use pw::properties::properties;
     use pw::registry::GlobalObject;
     use pw::spa::param::audio::{AudioFormat, AudioInfoRaw};
     use pw::spa::pod::Pod;
+    use pw::spa::utils::result::AsyncSeq;
     use pw::spa::utils::Direction;
+    use std::cell::{Cell, RefCell};
     use std::io::Cursor;
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc as std_mpsc, Arc, Mutex};
     use std::thread::{self, JoinHandle};
@@ -94,50 +151,7 @@ mod linux {
     /// an error because selected mode must never capture a different app.
     fn resolve_target(selection: &AudioCaptureSelection) -> Result<ApplicationAudioStream> {
         let streams = list_application_audio_streams()?;
-
-        if let Some(serial) = selection.object_serial {
-            if let Some(stream) = streams.iter().find(|stream| stream.object_serial == serial) {
-                return Ok(stream.clone());
-            }
-        }
-
-        let matches: Vec<ApplicationAudioStream> = streams
-            .into_iter()
-            .filter(|stream| {
-                selection
-                    .application_name
-                    .as_deref()
-                    .map(|value| value == stream.application_name)
-                    .unwrap_or(false)
-                    && selection
-                        .media_name
-                        .as_deref()
-                        .map(|value| value == stream.media_name)
-                        .unwrap_or(false)
-                    && selection
-                        .process_name
-                        .as_deref()
-                        .map(|value| value == stream.process_name)
-                        .unwrap_or(false)
-            })
-            .collect();
-
-        match matches.as_slice() {
-            [stream] => {
-                info!(
-                    "Reacquired selected PipeWire stream by identity: serial {} -> {}",
-                    selection.object_serial.unwrap_or_default(),
-                    stream.object_serial
-                );
-                Ok(stream.clone())
-            }
-            [] => Err(anyhow!(
-                "The selected application/media stream is unavailable. Switch to global system audio or choose another stream."
-            )),
-            _ => Err(anyhow!(
-                "The selected application exposes multiple matching media streams. Refresh the picker and choose one stream explicitly."
-            )),
-        }
+        super::select_capture_target(streams, selection)
     }
 
     pub struct PipeWireAudioStream {
@@ -360,22 +374,90 @@ mod linux {
                     let core = context.connect_rc(None)?;
                     let registry = core.get_registry_rc()?;
                     let streams = Arc::new(Mutex::new(Vec::new()));
-                    let streams_for_listener = streams.clone();
+                    // Registry globals only carry a partial prop set; the full
+                    // identity (media.name, application.process.*) is on the
+                    // bound node's info, so bind every matching node and keep
+                    // the proxies alive until their info events arrive.
+                    let node_bindings: Rc<RefCell<Vec<(Node, NodeListener)>>> =
+                        Rc::new(RefCell::new(Vec::new()));
+                    let pending_sync: Rc<Cell<Option<AsyncSeq>>> = Rc::new(Cell::new(None));
                     let listener = registry
                         .add_listener_local()
-                        .global(move |global| {
-                            if let Some(stream) = application_stream_from_global(global) {
-                                streams_for_listener.lock().unwrap().push(stream);
+                        .global({
+                            let registry = registry.clone();
+                            let core = core.clone();
+                            let streams = streams.clone();
+                            let node_bindings = node_bindings.clone();
+                            let pending_sync = pending_sync.clone();
+                            move |global| {
+                                if !is_application_audio_global(global) {
+                                    return;
+                                }
+                                let node: Node = match registry.bind(global) {
+                                    Ok(node) => node,
+                                    Err(error) => {
+                                        warn!(
+                                            "Failed to bind PipeWire node {}: {}",
+                                            global.id, error
+                                        );
+                                        return;
+                                    }
+                                };
+                                let info_listener = node
+                                    .add_listener_local()
+                                    .info({
+                                        let streams = streams.clone();
+                                        move |info| {
+                                            if let Some(stream) =
+                                                application_stream_from_node_info(info)
+                                            {
+                                                let mut streams = streams.lock().unwrap();
+                                                if !streams.iter().any(
+                                                    |existing: &ApplicationAudioStream| {
+                                                        existing.node_id == stream.node_id
+                                                    },
+                                                ) {
+                                                    streams.push(stream);
+                                                }
+                                            }
+                                        }
+                                    })
+                                    .register();
+                                node_bindings.borrow_mut().push((node, info_listener));
+                                // A new round trip after each bind guarantees the
+                                // final done event arrives after every info event.
+                                match core.sync(0) {
+                                    Ok(seq) => pending_sync.set(Some(seq)),
+                                    Err(error) => {
+                                        warn!("PipeWire core sync failed: {}", error)
+                                    }
+                                }
                             }
                         })
                         .register();
+                    let core_listener = core
+                        .add_listener_local()
+                        .done({
+                            let main_loop = main_loop.clone();
+                            let pending_sync = pending_sync.clone();
+                            move |id, seq| {
+                                if id == pw::core::PW_ID_CORE && pending_sync.get() == Some(seq) {
+                                    main_loop.quit();
+                                }
+                            }
+                        })
+                        .register();
+                    pending_sync.set(Some(core.sync(0)?));
+                    // Hard stop in case the server never answers the round trips.
                     let timer = main_loop.loop_().add_timer({
                         let main_loop = main_loop.clone();
                         move |_| main_loop.quit()
                     });
-                    timer.update_timer(Some(Duration::from_millis(150)), None);
+                    timer.update_timer(Some(Duration::from_secs(2)), None);
                     main_loop.run();
                     drop(listener);
+                    drop(core_listener);
+                    node_bindings.borrow_mut().clear();
                     let streams = Arc::try_unwrap(streams)
                         .map_err(|_| anyhow!("PipeWire enumeration state still in use"))?
                         .into_inner()
@@ -395,35 +477,45 @@ mod linux {
             })?
     }
 
-    fn application_stream_from_global(
+    fn is_application_audio_global(
         global: &GlobalObject<&pw::spa::utils::dict::DictRef>,
-    ) -> Option<ApplicationAudioStream> {
-        if global.type_.to_str() != NODE_INTERFACE {
-            return None;
-        }
-        let props = global.props.as_ref()?;
+    ) -> bool {
+        global.type_.to_str() == NODE_INTERFACE
+            && global
+                .props
+                .as_ref()
+                .and_then(|props| props.get(MEDIA_CLASS))
+                == Some("Stream/Output/Audio")
+    }
+
+    /// Identity comes from the bound node's info props, never from the
+    /// registry global: only the node info carries media.name and
+    /// application.process.*, and degraded placeholder identity must not
+    /// reach the picker or the reacquisition tuple.
+    fn application_stream_from_node_info(info: &NodeInfoRef) -> Option<ApplicationAudioStream> {
+        let props = info.props()?;
         if props.get(MEDIA_CLASS)? != "Stream/Output/Audio" {
             return None;
         }
         let serial = props.get(OBJECT_SERIAL)?.parse::<u64>().ok()?;
-        let node_name = props.get(NODE_NAME).unwrap_or("Unknown node").to_string();
+        let node_name = props.get(NODE_NAME)?.to_string();
         let application_name = props
             .get(APPLICATION_NAME)
             .unwrap_or(node_name.as_str())
             .to_string();
         let media_name = props
             .get(MEDIA_NAME)
-            .unwrap_or("Audio playback")
+            .unwrap_or(node_name.as_str())
             .to_string();
         let process_name = props
             .get(PROCESS_BINARY)
             .map(str::to_string)
             .or_else(|| props.get(PROCESS_ID).map(|pid| format!("process {}", pid)))
-            .unwrap_or_else(|| "Unknown process".to_string());
+            .unwrap_or_else(|| node_name.clone());
 
         Some(ApplicationAudioStream {
             object_serial: serial,
-            node_id: global.id,
+            node_id: info.id(),
             application_name,
             media_name,
             process_name,
@@ -445,3 +537,165 @@ pub fn list() -> Result<Vec<ApplicationAudioStream>> {
 
 #[cfg(not(target_os = "linux"))]
 pub struct Stream;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stream(serial: u64, app: &str, media: &str, process: &str) -> ApplicationAudioStream {
+        ApplicationAudioStream {
+            object_serial: serial,
+            node_id: serial as u32,
+            application_name: app.to_string(),
+            media_name: media.to_string(),
+            process_name: process.to_string(),
+            node_name: format!("node-{}", serial),
+        }
+    }
+
+    fn application_selection(serial: Option<u64>) -> AudioCaptureSelection {
+        AudioCaptureSelection {
+            mode: AudioCaptureMode::Application,
+            object_serial: serial,
+            application_name: Some("Chromium".to_string()),
+            media_name: Some("Playback".to_string()),
+            process_name: Some("vesktop.bin".to_string()),
+        }
+    }
+
+    #[test]
+    fn default_selection_is_global_and_valid() {
+        let selection = AudioCaptureSelection::global();
+        assert_eq!(selection.mode, AudioCaptureMode::Global);
+        assert!(!selection.is_application());
+        assert!(selection.validate().is_ok());
+    }
+
+    #[test]
+    fn application_selection_without_serial_is_rejected() {
+        let mut selection = application_selection(None);
+        selection.application_name = None;
+        selection.media_name = None;
+        selection.process_name = None;
+        let error = selection.validate().unwrap_err().to_string();
+        assert!(error.contains("switch to global system audio"), "{}", error);
+    }
+
+    #[test]
+    fn application_selection_with_serial_is_valid() {
+        assert!(application_selection(Some(187)).validate().is_ok());
+    }
+
+    #[test]
+    fn frontend_global_payload_deserializes() {
+        let selection: AudioCaptureSelection = serde_json::from_str(r#"{"mode":"global"}"#).unwrap();
+        assert_eq!(selection.mode, AudioCaptureMode::Global);
+        assert!(selection.object_serial.is_none());
+    }
+
+    #[test]
+    fn frontend_application_payload_deserializes() {
+        let payload = r#"{
+            "mode": "application",
+            "object_serial": 187,
+            "application_name": "Chromium",
+            "media_name": "Playback",
+            "process_name": "vesktop.bin"
+        }"#;
+        let selection: AudioCaptureSelection = serde_json::from_str(payload).unwrap();
+        assert!(selection.is_application());
+        assert_eq!(selection.object_serial, Some(187));
+        assert_eq!(selection.application_name.as_deref(), Some("Chromium"));
+        assert_eq!(selection.media_name.as_deref(), Some("Playback"));
+        assert_eq!(selection.process_name.as_deref(), Some("vesktop.bin"));
+    }
+
+    #[test]
+    fn select_capture_target_prefers_exact_serial() {
+        let streams = vec![
+            stream(92, "speech-dispatcher-dummy", "playback", "sd_dummy"),
+            stream(187, "Chromium", "Playback", "vesktop.bin"),
+        ];
+        let target = select_capture_target(streams, &application_selection(Some(187))).unwrap();
+        assert_eq!(target.object_serial, 187);
+        assert_eq!(target.application_name, "Chromium");
+    }
+
+    #[test]
+    fn select_capture_target_reacquires_recreated_node_by_identity() {
+        let streams = vec![
+            stream(92, "speech-dispatcher-dummy", "playback", "sd_dummy"),
+            stream(311, "Chromium", "Playback", "vesktop.bin"),
+        ];
+        let target = select_capture_target(streams, &application_selection(Some(187))).unwrap();
+        assert_eq!(target.object_serial, 311);
+        assert_eq!(target.process_name, "vesktop.bin");
+    }
+
+    #[test]
+    fn select_capture_target_fails_visibly_when_stream_is_gone() {
+        let streams = vec![stream(92, "speech-dispatcher-dummy", "playback", "sd_dummy")];
+        let error = select_capture_target(streams, &application_selection(Some(187)))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Switch to global system audio"), "{}", error);
+    }
+
+    #[test]
+    fn select_capture_target_rejects_ambiguous_identity_matches() {
+        let streams = vec![
+            stream(311, "Chromium", "Playback", "vesktop.bin"),
+            stream(312, "Chromium", "Playback", "vesktop.bin"),
+        ];
+        let error = select_capture_target(streams, &application_selection(Some(187)))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("multiple matching media streams"), "{}", error);
+    }
+
+    #[test]
+    fn select_capture_target_never_matches_without_full_identity() {
+        let streams = vec![stream(311, "Chromium", "Playback", "chrome")];
+        let selection = AudioCaptureSelection {
+            mode: AudioCaptureMode::Application,
+            object_serial: Some(187),
+            application_name: Some("Chromium".to_string()),
+            media_name: None,
+            process_name: None,
+        };
+        assert!(select_capture_target(streams, &selection).is_err());
+    }
+
+    /// Read-only introspection of the live PipeWire graph. Ignored by default
+    /// so CI machines without a PipeWire session skip it; run locally with
+    /// `cargo test -- --ignored live_pipewire`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore]
+    fn live_pipewire_enumeration_reports_honest_stream_identity() {
+        let streams = list().expect("PipeWire registry enumeration failed");
+        println!("Discovered {} Stream/Output/Audio node(s):", streams.len());
+        for stream in &streams {
+            println!(
+                "  serial={} app={:?} media={:?} process={:?} node={:?}",
+                stream.object_serial,
+                stream.application_name,
+                stream.media_name,
+                stream.process_name,
+                stream.node_name
+            );
+            assert!(!stream.application_name.is_empty());
+            assert!(!stream.media_name.is_empty());
+            assert!(!stream.process_name.is_empty());
+            assert!(!stream.node_name.is_empty());
+            assert_ne!(
+                stream.media_name, "Audio playback",
+                "degraded placeholder media identity must not be shipped"
+            );
+            assert_ne!(
+                stream.process_name, "Unknown process",
+                "degraded placeholder process identity must not be shipped"
+            );
+        }
+    }
+}

@@ -76,6 +76,17 @@ export function preserveLiveAnnotationImageData(
   };
 }
 
+/** Convert live image bytes to a CSP-compatible data URL. */
+export function imageDataToDataUrl(imageData: number[], mime = 'image/png'): string {
+  const bytes = Uint8Array.from(imageData);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
 /** Read a native clipboard image and turn it into the existing annotation payload. */
 export async function readClipboardImageAnnotation(
   readImage: ClipboardImageReader,

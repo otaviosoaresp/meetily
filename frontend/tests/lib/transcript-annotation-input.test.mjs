@@ -14,9 +14,14 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText;
 const cjsModule = { exports: {} };
-vm.runInNewContext(compiled, { exports: cjsModule.exports, module: cjsModule });
+vm.runInNewContext(compiled, {
+  exports: cjsModule.exports,
+  module: cjsModule,
+  btoa: value => Buffer.from(value, 'binary').toString('base64'),
+});
 const {
   formatClipboardImageError,
+  imageDataToDataUrl,
   preserveLiveAnnotationImageData,
   readClipboardImageAnnotation,
   resolveTranscriptAnchor,
@@ -32,6 +37,12 @@ assert.match(componentSource, /Colar imagem/, 'the transcript controls must expo
 assert.match(componentSource, /role="alert"/, 'clipboard failures must be visible to the user');
 assert.match(componentSource, /invoke<number\[\] \| null>\('read_wayland_clipboard_image'\)/, 'native clipboard failures must use the Wayland fallback');
 assert.match(componentSource, /aria-current=\{isActive \? 'true' : undefined\}/, 'the selected transcript anchor must be visually identifiable');
+assert.match(componentSource, /imageDataToDataUrl\(annotation\.imageData/, 'live previews must use the CSP-safe data URL path');
+
+const liveImageSource = imageDataToDataUrl([137, 80, 78, 71], 'image/png');
+assert.match(liveImageSource, /^data:image\/png;base64,/, 'live image previews must use a data URL');
+assert.equal(liveImageSource, 'data:image/png;base64,iVBORw==', 'live image previews must encode their bytes as base64');
+assert.doesNotMatch(liveImageSource, /^blob:/, 'live image previews must not use CSP-blocked blob URLs');
 
 const persistedImage = {
   id: 'annotation-1',

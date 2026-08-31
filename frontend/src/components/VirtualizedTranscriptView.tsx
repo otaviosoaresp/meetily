@@ -11,7 +11,7 @@ import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { NewTranscriptAnnotation, TranscriptAnnotation, TranscriptSegmentData } from "@/types";
 import { mergeTranscriptTimeline, TranscriptTimelineItem } from "@/lib/transcript-timeline";
-import { formatClipboardImageError, readClipboardImageAnnotation, resolveTranscriptAnchor } from "@/lib/transcript-annotation-input";
+import { formatClipboardImageError, imageDataToDataUrl, readClipboardImageAnnotation, resolveTranscriptAnchor } from "@/lib/transcript-annotation-input";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { Bookmark, ImageIcon, StickyNote } from "lucide-react";
 
@@ -155,15 +155,16 @@ const AnnotationRow = memo(function AnnotationRow({
     const [imageSrc, setImageSrc] = useState<string | null>(null);
 
     useEffect(() => {
-        let objectUrl: string | null = null;
-        if (annotation.type === 'image' && annotation.imageData) {
-            objectUrl = URL.createObjectURL(new Blob([new Uint8Array(annotation.imageData)], { type: annotation.imageMime || 'image/png' }));
-            setImageSrc(objectUrl);
+        let active = true;
+        if (annotation.type === 'image' && annotation.imageData && annotation.imageData.length > 0) {
+            setImageSrc(imageDataToDataUrl(annotation.imageData, annotation.imageMime || 'image/png'));
         } else if (annotation.type === 'image' && annotation.imageFile && getAnnotationImage) {
-            void getAnnotationImage(annotation).then(setImageSrc);
+            void getAnnotationImage(annotation).then(src => {
+                if (active) setImageSrc(src);
+            });
         }
         return () => {
-            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            active = false;
         };
     }, [annotation, getAnnotationImage]);
 

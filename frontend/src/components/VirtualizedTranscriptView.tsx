@@ -10,6 +10,8 @@ import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { NewTranscriptAnnotation, TranscriptAnnotation, TranscriptSegmentData } from "@/types";
 import { mergeTranscriptTimeline, TranscriptTimelineItem } from "@/lib/transcript-timeline";
+import { readClipboardImageAnnotation, resolveTranscriptAnchor } from "@/lib/transcript-annotation-input";
+import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { Bookmark, ImageIcon, StickyNote } from "lucide-react";
 
 export interface VirtualizedTranscriptViewProps {
@@ -78,6 +80,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence,
     isStreaming,
     showConfidence,
+    isActive,
     onSelectTimestamp,
 }: {
     id: string;
@@ -87,6 +90,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
+    isActive: boolean;
     onSelectTimestamp?: (timestamp: number) => void;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
@@ -96,7 +100,18 @@ const TranscriptSegment = memo(function TranscriptSegment({
         : 'bg-gray-100 text-gray-600';
 
     return (
-        <div id={`segment-${id}`} className="mb-3 cursor-pointer" onClick={() => onSelectTimestamp?.(timestamp)}>
+        <div
+            id={`segment-${id}`}
+            className={`mb-3 cursor-pointer rounded-lg border-l-4 px-2 py-1 transition-colors ${isActive ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-transparent'}`}
+            aria-current={isActive ? 'true' : undefined}
+            onClick={() => onSelectTimestamp?.(timestamp)}
+        >
+            {isActive && (
+                <div className="mb-1 flex items-center gap-2 text-[11px] font-medium text-blue-700">
+                    <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden="true" />
+                    Insertion point — annotations attach here
+                </div>
+            )}
             <div className="flex items-start gap-2">
                 <Tooltip>
                     <TooltipTrigger>
@@ -169,6 +184,7 @@ function TimelineRow({
     streamingSegmentId,
     getDisplayText,
     showConfidence,
+    activeTimestamp,
     onSelectTimestamp,
     getAnnotationImage,
 }: {
@@ -176,6 +192,7 @@ function TimelineRow({
     streamingSegmentId: string | null;
     getDisplayText: (segment: TranscriptSegmentData) => string;
     showConfidence: boolean;
+    activeTimestamp: number | null;
     onSelectTimestamp?: (timestamp: number) => void;
     getAnnotationImage?: (annotation: TranscriptAnnotation) => Promise<string | null>;
 }) {
@@ -191,6 +208,7 @@ function TimelineRow({
             confidence={item.segment.confidence}
             isStreaming={streamingSegmentId === item.segment.id}
             showConfidence={showConfidence}
+            isActive={activeTimestamp === item.segment.timestamp}
             onSelectTimestamp={onSelectTimestamp}
         />
     );
@@ -257,7 +275,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     );
 
     const latestSegment = segments[segments.length - 1];
-    const anchorTime = activeTimestamp ?? latestSegment?.endTime ?? latestSegment?.timestamp ?? 0;
+    const { time: anchorTime, isDefault: anchorIsDefault, label: anchorLabel } = resolveTranscriptAnchor(activeTimestamp, latestSegment);
     const canAddAnnotations = Boolean(onAddAnnotation) && !isStopping && !isProcessing;
     const handleSelectTimestamp = useCallback((timestamp: number) => {
         setActiveTimestamp(timestamp);
@@ -280,6 +298,16 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
             imageMime: item.type,
         }));
     }, [addAnnotation, anchorTime, canAddAnnotations]);
+    const handleClipboardImagePaste = useCallback(async () => {
+        if (!canAddAnnotations) return;
+        const annotation = await readClipboardImageAnnotation(readImage, anchorTime);
+        if (annotation) await addAnnotation(annotation);
+    }, [addAnnotation, anchorTime, canAddAnnotations]);
+    const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (!canAddAnnotations || event.key.toLowerCase() !== 'v' || (!event.ctrlKey && !event.metaKey)) return;
+        event.preventDefault();
+        void handleClipboardImagePaste();
+    }, [canAddAnnotations, handleClipboardImagePaste]);
     const addBookmark = useCallback(() => {
         void addAnnotation({ type: 'bookmark', anchorTime });
     }, [addAnnotation, anchorTime]);
@@ -350,7 +378,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     const useVirtualization = timelineItems.length >= VIRTUALIZATION_THRESHOLD;
 
     return (
-        <div ref={scrollRef} tabIndex={0} onPaste={handlePaste} className="flex flex-col h-full overflow-y-auto px-4 py-2 outline-none">
+        <div ref={scrollRef} tabIndex={0} onKeyDown={handleKeyDown} onPaste={handlePaste} className="flex flex-col h-full overflow-y-auto px-4 py-2 outline-none">
             {/* Recording Status Bar - Sticky at top, always visible when recording */}
             <AnimatePresence>
                 {isRecording && (
@@ -363,11 +391,12 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
             {canAddAnnotations && (
                 <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-2 border-b border-gray-100 bg-white py-2">
                     <button type="button" onClick={addBookmark} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50" title="Add a marker at the selected transcript point"><Bookmark size={13} /> Marker</button>
+                    <button type="button" onClick={() => void handleClipboardImagePaste()} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50" title="Paste an image from the system clipboard"><ImageIcon size={13} /> Paste image</button>
                     <div className="flex min-w-[180px] flex-1 gap-1">
-                        <input value={noteInput} onChange={event => setNoteInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') addNote(); }} placeholder="Short note…" className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none" />
+                        <input value={noteInput} onChange={event => setNoteInput(event.target.value)} onPaste={event => event.stopPropagation()} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addNote(); } if (event.key.toLowerCase() === 'v' && (event.ctrlKey || event.metaKey)) event.stopPropagation(); }} placeholder="Short note…" className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none" />
                         <button type="button" onClick={addNote} disabled={!noteInput.trim()} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 disabled:opacity-40"><StickyNote size={13} /> Add</button>
                     </div>
-                    <span className="text-[11px] text-gray-400">Click a transcript line, then paste an image</span>
+                    <span className="text-[11px] text-gray-500" aria-live="polite">{anchorLabel}{anchorIsDefault ? ' — click a line to choose another anchor' : ''}</span>
                 </div>
             )}
 
@@ -425,7 +454,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         transform: `translateY(${virtualRow.start}px)`,
                                     }}
                                 >
-                                    <TimelineRow item={item} streamingSegmentId={streamingSegmentId} getDisplayText={getDisplayText} showConfidence={showConfidence} onSelectTimestamp={handleSelectTimestamp} getAnnotationImage={getAnnotationImage} />
+                                    <TimelineRow item={item} streamingSegmentId={streamingSegmentId} getDisplayText={getDisplayText} showConfidence={showConfidence} activeTimestamp={activeTimestamp} onSelectTimestamp={handleSelectTimestamp} getAnnotationImage={getAnnotationImage} />
                                 </div>
                             );
                         })}
@@ -472,7 +501,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ duration: 0.15 }}
                                 >
-                                    <TimelineRow item={item} streamingSegmentId={streamingSegmentId} getDisplayText={getDisplayText} showConfidence={showConfidence} onSelectTimestamp={handleSelectTimestamp} getAnnotationImage={getAnnotationImage} />
+                                    <TimelineRow item={item} streamingSegmentId={streamingSegmentId} getDisplayText={getDisplayText} showConfidence={showConfidence} activeTimestamp={activeTimestamp} onSelectTimestamp={handleSelectTimestamp} getAnnotationImage={getAnnotationImage} />
                                 </motion.div>
                             );
                         })}

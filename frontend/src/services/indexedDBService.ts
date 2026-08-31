@@ -355,7 +355,7 @@ class IndexedDBService {
       });
     } catch (error) {
       console.error('Failed to get annotations from IndexedDB:', error);
-      return [];
+      throw error;
     }
   }
 

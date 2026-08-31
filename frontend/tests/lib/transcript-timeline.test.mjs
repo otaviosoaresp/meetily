@@ -14,9 +14,9 @@ const source = fs.readFileSync(modulePath, 'utf8');
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText;
-const module = { exports: {} };
-vm.runInNewContext(compiled, { exports: module.exports, module });
-const { mergeTranscriptTimeline } = module.exports;
+const cjsModule = { exports: {} };
+vm.runInNewContext(compiled, { exports: cjsModule.exports, module: cjsModule });
+const { mergeTranscriptTimeline } = cjsModule.exports;
 
 const segments = [
   { id: 's-2', timestamp: 20, text: 'later' },

@@ -1,7 +1,6 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
@@ -11,7 +10,7 @@ use crate::{
         repositories::{
             meeting::MeetingsRepository, organization::OrganizationRepository, setting::SettingsRepository,
             transcript::TranscriptsRepository,
-            annotation::AnnotationsRepository,
+            annotation::{annotation_directory, AnnotationsRepository},
         },
     },
     state::AppState,
@@ -22,18 +21,16 @@ use crate::summary::llm_client::{generate_summary, LLMProvider};
 // Hardcoded server URL
 const APP_SERVER_URL: &str = "http://localhost:5167";
 
-fn annotation_directory<R: Runtime>(
+fn annotation_directory_for_app<R: Runtime>(
     app: &AppHandle<R>,
     meeting_id: &str,
     folder_path: Option<&str>,
-) -> Result<PathBuf, String> {
-    if let Some(folder_path) = folder_path {
-        return Ok(PathBuf::from(folder_path).join("annotations"));
-    }
-
-    app.path()
+) -> Result<std::path::PathBuf, String> {
+    let app_data_dir = app
+        .path()
         .app_data_dir()
-        .map(|path| path.join("meetings").join(meeting_id).join("annotations"))
+        .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
+    annotation_directory(&app_data_dir, meeting_id, folder_path)
         .map_err(|e| format!("Failed to resolve annotation directory: {}", e))
 }
 
@@ -1017,7 +1014,7 @@ pub async fn api_delete_api_key<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_delete_meeting<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_id: String,
     auth_token: Option<String>,
@@ -1029,9 +1026,22 @@ pub async fn api_delete_meeting<R: Runtime>(
     );
 
     let pool = state.db_manager.pool();
+    let meeting = MeetingsRepository::get_meeting_metadata(pool, &meeting_id)
+        .await
+        .map_err(|e| format!("Failed to retrieve meeting before deletion: {}", e))?
+        .ok_or_else(|| format!("Meeting not found or could not be deleted: {}", meeting_id))?;
+    let directory = annotation_directory_for_app(&app, &meeting_id, meeting.folder_path.as_deref())?;
 
     match MeetingsRepository::delete_meeting(pool, &meeting_id).await {
         Ok(true) => {
+            if let Err(error) = AnnotationsRepository::remove_directory(&directory).await {
+                log_warn!(
+                    "Meeting {} was deleted but annotation files could not be removed from {}: {}",
+                    meeting_id,
+                    directory.display(),
+                    error
+                );
+            }
             log_info!("Successfully deleted meeting {}", meeting_id);
             Ok(serde_json::json!({
                 "status": "success",
@@ -1105,7 +1115,7 @@ pub async fn api_add_transcript_annotation<R: Runtime>(
         .await
         .map_err(|e| format!("Failed to retrieve meeting: {}", e))?
         .ok_or_else(|| format!("Meeting not found: {}", meeting_id))?;
-    let directory = annotation_directory(&app, &meeting_id, meeting.folder_path.as_deref())?;
+    let directory = annotation_directory_for_app(&app, &meeting_id, meeting.folder_path.as_deref())?;
 
     AnnotationsRepository::add(state.db_manager.pool(), &meeting_id, &annotation, &directory)
         .await
@@ -1126,7 +1136,7 @@ pub async fn api_get_annotation_image<R: Runtime>(
         .await
         .map_err(|e| format!("Failed to retrieve meeting: {}", e))?
         .ok_or_else(|| format!("Meeting not found: {}", meeting_id))?;
-    let directory = annotation_directory(&app, &meeting_id, meeting.folder_path.as_deref())?;
+    let directory = annotation_directory_for_app(&app, &meeting_id, meeting.folder_path.as_deref())?;
     tokio::fs::read(directory.join(image_file))
         .await
         .map_err(|e| format!("Failed to read annotation image: {}", e))
@@ -1303,15 +1313,10 @@ pub async fn api_save_transcript<R: Runtime>(
 
     let pool = state.db_manager.pool();
     let annotations = annotations.unwrap_or_default();
-    let annotation_dir = if let Some(folder_path) = folder_path.as_deref() {
-        PathBuf::from(folder_path).join("annotations")
-    } else {
-        annotation_directory(&app, "", None)?
-            .parent()
-            .and_then(|path| path.parent())
-            .map(PathBuf::from)
-            .ok_or_else(|| "Failed to resolve annotation directory".to_string())?
-    };
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
 
     // Now, call the repository with the correctly typed data.
     match TranscriptsRepository::save_transcript(
@@ -1320,7 +1325,7 @@ pub async fn api_save_transcript<R: Runtime>(
         &transcripts_to_save,
         folder_path,
         &annotations,
-        &annotation_dir,
+        &app_data_dir,
     )
     .await
     {

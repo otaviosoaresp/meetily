@@ -25,7 +25,11 @@
         "tauri:build:coreml": "tauri build -- --features coreml",
         "tauri:build:openblas": "tauri build -- --features openblas",
         "tauri:build:hipblas": "tauri build -- --features hipblas",
-        "lint": "next lint"
+        "lint": "next lint",
+        "test": "pnpm run test:transcript-timeline && pnpm run test:transcript-recovery && pnpm run test:annotation-save-gate",
+        "test:transcript-timeline": "node tests/lib/transcript-timeline.test.mjs",
+        "test:transcript-recovery": "node tests/lib/transcript-recovery.test.mjs",
+        "test:annotation-save-gate": "node tests/lib/annotation-save-gate.test.mjs"
     },
     "dependencies": {
         "@blocknote/core": "0.36.0",

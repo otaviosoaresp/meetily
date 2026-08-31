@@ -7,6 +7,7 @@ import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService, StoredAnnotation } from '@/services/indexedDBService';
+import { AnnotationSaveGate } from '@/lib/annotation-save-gate';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -24,6 +25,9 @@ interface TranscriptContextType {
   markMeetingAsSaved: () => Promise<void>;
   addAnnotation: (annotation: NewTranscriptAnnotation) => Promise<void>;
   clearAnnotations: () => void;
+  beginAnnotationSave: () => void;
+  finishAnnotationSave: () => void;
+  waitForAnnotationWrites: () => Promise<void>;
 }
 
 const TranscriptContext = createContext<TranscriptContextType | undefined>(undefined);
@@ -40,6 +44,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Refs for transcript management
   const transcriptsRef = useRef<Transcript[]>(transcripts);
   const annotationsRef = useRef<TranscriptAnnotation[]>(annotations);
+  const annotationSaveGateRef = useRef(new AnnotationSaveGate());
   const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
@@ -109,6 +114,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             setCurrentMeetingId(meetingId);
             annotationsRef.current = [];
             setAnnotations([]);
+            annotationSaveGateRef.current.finish();
 
             // Store in sessionStorage as fallback for markMeetingAsSaved
             sessionStorage.setItem('indexeddb_current_meeting_id', meetingId);
@@ -511,6 +517,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addAnnotation = useCallback(async (input: NewTranscriptAnnotation) => {
+    if (!annotationSaveGateRef.current.canWrite()) {
+      return;
+    }
     const meetingId = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
     const annotation: TranscriptAnnotation = {
       ...input,
@@ -522,16 +531,29 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     annotationsRef.current = updatedAnnotations;
     setAnnotations(updatedAnnotations);
     if (meetingId) {
-      await indexedDBService.saveAnnotation(meetingId, {
+      const write = annotationSaveGateRef.current.track(indexedDBService.saveAnnotation(meetingId, {
         ...annotation,
         meetingId,
-      } as StoredAnnotation);
+      } as StoredAnnotation));
+      await write;
     }
   }, [currentMeetingId]);
 
   const clearAnnotations = useCallback(() => {
     annotationsRef.current = [];
     setAnnotations([]);
+  }, []);
+
+  const beginAnnotationSave = useCallback(() => {
+    annotationSaveGateRef.current.begin();
+  }, []);
+
+  const finishAnnotationSave = useCallback(() => {
+    annotationSaveGateRef.current.finish();
+  }, []);
+
+  const waitForAnnotationWrites = useCallback(async () => {
+    await annotationSaveGateRef.current.wait();
   }, []);
 
   // Mark current meeting as saved in IndexedDB
@@ -573,6 +595,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     markMeetingAsSaved,
     addAnnotation,
     clearAnnotations,
+    beginAnnotationSave,
+    finishAnnotationSave,
+    waitForAnnotationWrites,
   };
 
   return (

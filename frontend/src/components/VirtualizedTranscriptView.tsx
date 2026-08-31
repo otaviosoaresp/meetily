@@ -258,16 +258,18 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
     const latestSegment = segments[segments.length - 1];
     const anchorTime = activeTimestamp ?? latestSegment?.endTime ?? latestSegment?.timestamp ?? 0;
+    const canAddAnnotations = Boolean(onAddAnnotation) && !isStopping && !isProcessing;
     const handleSelectTimestamp = useCallback((timestamp: number) => {
         setActiveTimestamp(timestamp);
         scrollRef.current?.focus();
     }, []);
     const addAnnotation = useCallback(async (input: NewTranscriptAnnotation) => {
+        if (isStopping || isProcessing) return;
         await onAddAnnotation?.(input);
-    }, [onAddAnnotation]);
+    }, [isProcessing, isStopping, onAddAnnotation]);
     const handlePaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
         const item = Array.from(event.clipboardData.items).find(entry => entry.type.startsWith('image/'));
-        if (!item || !onAddAnnotation) return;
+        if (!item || !canAddAnnotations) return;
         const file = item.getAsFile();
         if (!file) return;
         event.preventDefault();
@@ -277,7 +279,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
             imageData: Array.from(new Uint8Array(buffer)),
             imageMime: item.type,
         }));
-    }, [addAnnotation, anchorTime, onAddAnnotation]);
+    }, [addAnnotation, anchorTime, canAddAnnotations]);
     const addBookmark = useCallback(() => {
         void addAnnotation({ type: 'bookmark', anchorTime });
     }, [addAnnotation, anchorTime]);
@@ -358,7 +360,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 )}
             </AnimatePresence>
 
-            {onAddAnnotation && (
+            {canAddAnnotations && (
                 <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-2 border-b border-gray-100 bg-white py-2">
                     <button type="button" onClick={addBookmark} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50" title="Add a marker at the selected transcript point"><Bookmark size={13} /> Marker</button>
                     <div className="flex min-w-[180px] flex-1 gap-1">

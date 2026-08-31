@@ -672,6 +672,7 @@ pub fn run() {
             api::api_get_meeting,
             api::api_get_transcript_annotations,
             api::api_add_transcript_annotation,
+            api::read_wayland_clipboard_image,
             api::api_get_annotation_image,
             api::api_get_meeting_metadata,
             api::api_get_meeting_transcripts,

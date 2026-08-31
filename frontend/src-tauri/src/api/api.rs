@@ -1,6 +1,8 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
@@ -190,6 +192,66 @@ pub struct TranscriptAnnotationInput {
     pub image_file: Option<String>,
     pub image_data: Option<Vec<u8>>,
     pub image_mime: Option<String>,
+}
+
+/// Read a PNG image from the Wayland clipboard when the webview/native plugin cannot.
+#[tauri::command]
+pub fn read_wayland_clipboard_image() -> Result<Option<Vec<u8>>, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        return Err("wl-paste is only available for Linux/Wayland clipboard fallback".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let types = Command::new("wl-paste")
+            .arg("--list-types")
+            .output()
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    "wl-paste is not installed; install wl-clipboard to paste images on Linux/Wayland".to_string()
+                } else {
+                    format!("failed to run wl-paste --list-types: {}", error)
+                }
+            })?;
+
+        if !types.status.success() {
+            let detail = String::from_utf8_lossy(&types.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                "wl-paste failed to list the Wayland clipboard types".to_string()
+            } else {
+                format!("wl-paste failed to list the Wayland clipboard types: {}", detail)
+            });
+        }
+
+        let image_type = String::from_utf8_lossy(&types.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|mime| mime.starts_with("image/"))
+            .min_by_key(|mime| if *mime == "image/png" { 0 } else { 1 })
+            .map(str::to_string);
+        let Some(image_type) = image_type else {
+            return Ok(None);
+        };
+
+        let image = Command::new("wl-paste")
+            .args(["--no-newline", "--type", image_type.as_str()])
+            .output()
+            .map_err(|error| format!("failed to read {} from Wayland clipboard: {}", image_type, error))?;
+        if !image.status.success() {
+            let detail = String::from_utf8_lossy(&image.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                format!("wl-paste failed to read {} from the Wayland clipboard", image_type)
+            } else {
+                format!("wl-paste failed to read {} from the Wayland clipboard: {}", image_type, detail)
+            });
+        }
+
+        if image.stdout.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(image.stdout))
+    }
 }
 
 /// Meeting metadata without transcripts (for pagination)

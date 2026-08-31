@@ -6,6 +6,7 @@ export interface ClipboardImage {
 }
 
 export type ClipboardImageReader = () => Promise<ClipboardImage>;
+export type WaylandClipboardImageReader = () => Promise<Uint8Array | null>;
 export type PngEncoder = (
   rgba: Uint8Array,
   size: { width: number; height: number },
@@ -54,11 +55,20 @@ export const encodeRgbaAsPng: PngEncoder = async (rgba, size) => {
   return new Uint8Array(await blob.arrayBuffer());
 };
 
+/** Turn a native clipboard failure into a message that helps diagnose platform-specific issues. */
+export function formatClipboardImageError(error: unknown): string {
+  const message = error && typeof error === 'object' && 'message' in error
+    ? String(error.message)
+    : String(error);
+  return `Falha ao colar imagem: ${message}. Em Linux/Wayland, verifique se a imagem foi copiada para o clipboard e se a janela tem acesso a ele.`;
+}
+
 /** Read a native clipboard image and turn it into the existing annotation payload. */
 export async function readClipboardImageAnnotation(
   readImage: ClipboardImageReader,
   anchorTime: number,
   encodePng: PngEncoder = encodeRgbaAsPng,
+  readWaylandImage?: WaylandClipboardImageReader,
 ): Promise<NewTranscriptAnnotation | null> {
   try {
     const image = await readImage();
@@ -70,7 +80,22 @@ export async function readClipboardImageAnnotation(
       imageData: Array.from(png),
       imageMime: 'image/png',
     };
-  } catch {
-    return null;
+  } catch (err) {
+    console.error(err);
+    if (!readWaylandImage) throw err;
+
+    try {
+      const png = await readWaylandImage();
+      if (!png || png.length === 0) return null;
+      return {
+        type: 'image',
+        anchorTime,
+        imageData: Array.from(png),
+        imageMime: 'image/png',
+      };
+    } catch (fallbackError) {
+      console.error(fallbackError);
+      throw fallbackError;
+    }
   }
 }

@@ -15,14 +15,21 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const cjsModule = { exports: {} };
 vm.runInNewContext(compiled, { exports: cjsModule.exports, module: cjsModule });
-const { readClipboardImageAnnotation, resolveTranscriptAnchor } = cjsModule.exports;
+const {
+  formatClipboardImageError,
+  readClipboardImageAnnotation,
+  resolveTranscriptAnchor,
+} = cjsModule.exports;
 const componentSource = fs.readFileSync(
   path.join(path.dirname(modulePath), '..', 'components', 'VirtualizedTranscriptView.tsx'),
   'utf8'
 );
 
-assert.match(componentSource, /readClipboardImageAnnotation\(readImage, anchorTime\)/, 'the transcript view must read system clipboard images');
-assert.match(componentSource, /onKeyDown=\{handleKeyDown\}/, 'Ctrl/Cmd+V must trigger the native image path');
+assert.match(componentSource, /readClipboardImageAnnotation\(\s*readImage,\s*anchorTime/, 'the transcript view must read system clipboard images');
+assert.match(componentSource, /document\.addEventListener\('keydown', handleGlobalPaste\)/, 'Ctrl/Cmd+V must be handled independently of transcript focus');
+assert.match(componentSource, /Colar imagem/, 'the transcript controls must expose a native image paste button');
+assert.match(componentSource, /role="alert"/, 'clipboard failures must be visible to the user');
+assert.match(componentSource, /invoke<number\[\] \| null>\('read_wayland_clipboard_image'\)/, 'native clipboard failures must use the Wayland fallback');
 assert.match(componentSource, /aria-current=\{isActive \? 'true' : undefined\}/, 'the selected transcript anchor must be visually identifiable');
 
 const encodedPng = await readClipboardImageAnnotation(
@@ -44,10 +51,39 @@ assert.deepEqual(JSON.parse(JSON.stringify(encodedPng)), {
   imageMime: 'image/png',
 }, 'clipboard image reads must become a PNG annotation at the selected anchor');
 
+const fallbackPng = await readClipboardImageAnnotation(
+  async () => { throw new Error('native clipboard unavailable'); },
+  7.5,
+  async () => { throw new Error('native encoder should not run for PNG fallback'); },
+  async () => new Uint8Array([137, 80, 78, 71])
+);
+assert.deepEqual(JSON.parse(JSON.stringify(fallbackPng)), {
+  type: 'image',
+  anchorTime: 7.5,
+  imageData: [137, 80, 78, 71],
+  imageMime: 'image/png',
+}, 'Wayland PNG fallback must use the same annotation payload');
+
 assert.equal(
-  await readClipboardImageAnnotation(async () => { throw new Error('clipboard has no image'); }, 12.5),
+  await readClipboardImageAnnotation(
+    async () => { throw new Error('native clipboard unavailable'); },
+    7.5,
+    async () => { throw new Error('native encoder should not run for an empty fallback'); },
+    async () => null
+  ),
   null,
-  'text-only clipboards must not create an image annotation'
+  'an empty Wayland clipboard must be treated as no image'
+);
+
+await assert.rejects(
+  () => readClipboardImageAnnotation(async () => { throw new Error('clipboard has no image'); }, 12.5),
+  /clipboard has no image/,
+  'clipboard failures must preserve the native error for the UI'
+);
+assert.match(
+  formatClipboardImageError(new Error('clipboard unavailable')),
+  /^Falha ao colar imagem: clipboard unavailable\. .*Linux\/Wayland/,
+  'clipboard failures must include a useful Linux/Wayland hint'
 );
 
 assert.deepEqual(

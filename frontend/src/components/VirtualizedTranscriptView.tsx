@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { invoke } from "@tauri-apps/api/core";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
@@ -10,7 +11,7 @@ import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { NewTranscriptAnnotation, TranscriptAnnotation, TranscriptSegmentData } from "@/types";
 import { mergeTranscriptTimeline, TranscriptTimelineItem } from "@/lib/transcript-timeline";
-import { readClipboardImageAnnotation, resolveTranscriptAnchor } from "@/lib/transcript-annotation-input";
+import { formatClipboardImageError, readClipboardImageAnnotation, resolveTranscriptAnchor } from "@/lib/transcript-annotation-input";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { Bookmark, ImageIcon, StickyNote } from "lucide-react";
 
@@ -238,6 +239,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
     const [activeTimestamp, setActiveTimestamp] = useState<number | null>(null);
     const [noteInput, setNoteInput] = useState('');
+    const [pasteError, setPasteError] = useState<string | null>(null);
     const timelineItems = mergeTranscriptTimeline(segments, annotations);
 
     // Force re-render without flushSync (avoids React warning)
@@ -300,11 +302,30 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     }, [addAnnotation, anchorTime, canAddAnnotations]);
     const handleClipboardImagePaste = useCallback(async () => {
         if (!canAddAnnotations) return;
-        const annotation = await readClipboardImageAnnotation(readImage, anchorTime);
-        if (annotation) await addAnnotation(annotation);
+        setPasteError(null);
+        try {
+            const annotation = await readClipboardImageAnnotation(
+                readImage,
+                anchorTime,
+                undefined,
+                async () => {
+                    const png = await invoke<number[] | null>('read_wayland_clipboard_image');
+                    return png ? new Uint8Array(png) : null;
+                },
+            );
+            if (annotation) {
+                await addAnnotation(annotation);
+            } else {
+                setPasteError('Nenhuma imagem no clipboard.');
+            }
+        } catch (err) {
+            setPasteError(formatClipboardImageError(err));
+        }
     }, [addAnnotation, anchorTime, canAddAnnotations]);
-    const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const handleGlobalPaste = useCallback((event: KeyboardEvent) => {
         if (!canAddAnnotations || event.key.toLowerCase() !== 'v' || (!event.ctrlKey && !event.metaKey)) return;
+        const target = event.target as HTMLElement | null;
+        if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
         event.preventDefault();
         void handleClipboardImagePaste();
     }, [canAddAnnotations, handleClipboardImagePaste]);
@@ -317,6 +338,12 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         void addAnnotation({ type: 'note', anchorTime, text });
         setNoteInput('');
     }, [addAnnotation, anchorTime, noteInput]);
+
+    useEffect(() => {
+        if (!canAddAnnotations) return;
+        document.addEventListener('keydown', handleGlobalPaste);
+        return () => document.removeEventListener('keydown', handleGlobalPaste);
+    }, [canAddAnnotations, handleGlobalPaste]);
 
     // Infinite scroll: IntersectionObserver to trigger loading more
     useEffect(() => {
@@ -378,7 +405,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     const useVirtualization = timelineItems.length >= VIRTUALIZATION_THRESHOLD;
 
     return (
-        <div ref={scrollRef} tabIndex={0} onKeyDown={handleKeyDown} onPaste={handlePaste} className="flex flex-col h-full overflow-y-auto px-4 py-2 outline-none">
+        <div ref={scrollRef} tabIndex={0} onPaste={handlePaste} className="flex flex-col h-full overflow-y-auto px-4 py-2 outline-none">
             {/* Recording Status Bar - Sticky at top, always visible when recording */}
             <AnimatePresence>
                 {isRecording && (
@@ -391,12 +418,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
             {canAddAnnotations && (
                 <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-2 border-b border-gray-100 bg-white py-2">
                     <button type="button" onClick={addBookmark} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50" title="Add a marker at the selected transcript point"><Bookmark size={13} /> Marker</button>
-                    <button type="button" onClick={() => void handleClipboardImagePaste()} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50" title="Paste an image from the system clipboard"><ImageIcon size={13} /> Paste image</button>
+                    <button type="button" onClick={() => void handleClipboardImagePaste()} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50" title="Paste an image from the system clipboard"><ImageIcon size={13} /> Colar imagem</button>
                     <div className="flex min-w-[180px] flex-1 gap-1">
                         <input value={noteInput} onChange={event => setNoteInput(event.target.value)} onPaste={event => event.stopPropagation()} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addNote(); } if (event.key.toLowerCase() === 'v' && (event.ctrlKey || event.metaKey)) event.stopPropagation(); }} placeholder="Short note…" className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none" />
                         <button type="button" onClick={addNote} disabled={!noteInput.trim()} className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 disabled:opacity-40"><StickyNote size={13} /> Add</button>
                     </div>
                     <span className="text-[11px] text-gray-500" aria-live="polite">{anchorLabel}{anchorIsDefault ? ' — click a line to choose another anchor' : ''}</span>
+                    {pasteError && <span role="alert" className="basis-full text-xs text-red-600">{pasteError}</span>}
                 </div>
             )}
 

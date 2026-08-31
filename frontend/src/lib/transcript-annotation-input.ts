@@ -77,7 +77,7 @@ export function preserveLiveAnnotationImageData(
 }
 
 /** Convert live image bytes to a CSP-compatible data URL. */
-export function imageDataToDataUrl(imageData: number[], mime = 'image/png'): string {
+export function imageDataToDataUrl(imageData: ArrayLike<number>, mime = 'image/png'): string {
   const bytes = Uint8Array.from(imageData);
   let binary = '';
   const chunkSize = 0x8000;

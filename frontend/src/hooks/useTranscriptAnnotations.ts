@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { NewTranscriptAnnotation, TranscriptAnnotation } from '@/types';
-import { preserveLiveAnnotationImageData } from '@/lib/transcript-annotation-input';
+import { imageDataToDataUrl, preserveLiveAnnotationImageData } from '@/lib/transcript-annotation-input';
 
 function mimeForFile(fileName: string): string {
   const extension = fileName.split('.').pop()?.toLowerCase();
@@ -47,10 +47,7 @@ export function useTranscriptAnnotations(meetingId: string | null) {
         meetingId,
         imageFile: annotation.imageFile,
       });
-      const binary = Uint8Array.from(bytes);
-      let binaryString = '';
-      for (let index = 0; index < binary.length; index += 1) binaryString += String.fromCharCode(binary[index]);
-      return `data:${mimeForFile(annotation.imageFile)};base64,${btoa(binaryString)}`;
+      return imageDataToDataUrl(bytes, mimeForFile(annotation.imageFile));
     } catch (error) {
       console.error('Failed to load annotation image:', error);
       return null;

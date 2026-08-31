@@ -17,6 +17,7 @@ const cjsModule = { exports: {} };
 vm.runInNewContext(compiled, { exports: cjsModule.exports, module: cjsModule });
 const {
   formatClipboardImageError,
+  preserveLiveAnnotationImageData,
   readClipboardImageAnnotation,
   resolveTranscriptAnchor,
 } = cjsModule.exports;
@@ -31,6 +32,22 @@ assert.match(componentSource, /Colar imagem/, 'the transcript controls must expo
 assert.match(componentSource, /role="alert"/, 'clipboard failures must be visible to the user');
 assert.match(componentSource, /invoke<number\[\] \| null>\('read_wayland_clipboard_image'\)/, 'native clipboard failures must use the Wayland fallback');
 assert.match(componentSource, /aria-current=\{isActive \? 'true' : undefined\}/, 'the selected transcript anchor must be visually identifiable');
+
+const persistedImage = {
+  id: 'annotation-1',
+  type: 'image',
+  anchorTime: 4,
+  createdAt: '2026-08-31T20:00:00.000Z',
+  imageFile: 'annotation-1.png',
+};
+const liveImage = preserveLiveAnnotationImageData(persistedImage, {
+  type: 'image',
+  anchorTime: 4,
+  imageData: [137, 80, 78, 71],
+  imageMime: 'image/png',
+});
+assert.deepEqual(JSON.parse(JSON.stringify(liveImage.imageData)), [137, 80, 78, 71], 'live image bytes must survive a persistence response that only contains the image file');
+assert.equal(liveImage.imageMime, 'image/png', 'live image MIME type must survive persistence normalization');
 
 const encodedPng = await readClipboardImageAnnotation(
   async () => ({

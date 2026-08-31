@@ -63,6 +63,19 @@ export function formatClipboardImageError(error: unknown): string {
   return `Falha ao colar imagem: ${message}. Em Linux/Wayland, verifique se a imagem foi copiada para o clipboard e se a janela tem acesso a ele.`;
 }
 
+/** Keep image bytes available for the live preview when persistence returns only metadata. */
+export function preserveLiveAnnotationImageData(
+  persisted: TranscriptAnnotation,
+  input: NewTranscriptAnnotation,
+): TranscriptAnnotation {
+  if (input.type !== 'image' || input.imageData === undefined) return persisted;
+  return {
+    ...persisted,
+    imageData: [...input.imageData],
+    imageMime: input.imageMime ?? persisted.imageMime,
+  };
+}
+
 /** Read a native clipboard image and turn it into the existing annotation payload. */
 export async function readClipboardImageAnnotation(
   readImage: ClipboardImageReader,

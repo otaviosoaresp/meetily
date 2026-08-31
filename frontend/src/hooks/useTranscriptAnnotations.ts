@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { NewTranscriptAnnotation, TranscriptAnnotation } from '@/types';
+import { preserveLiveAnnotationImageData } from '@/lib/transcript-annotation-input';
 
 function mimeForFile(fileName: string): string {
   const extension = fileName.split('.').pop()?.toLowerCase();
@@ -35,7 +36,8 @@ export function useTranscriptAnnotations(meetingId: string | null) {
         imageMime: input.imageMime ?? null,
       },
     });
-    setAnnotations(previous => [...previous, saved].sort((a, b) => a.anchorTime - b.anchorTime));
+    const liveAnnotation = preserveLiveAnnotationImageData(saved, input);
+    setAnnotations(previous => [...previous, liveAnnotation].sort((a, b) => a.anchorTime - b.anchorTime));
   }, [meetingId]);
 
   const getAnnotationImage = useCallback(async (annotation: TranscriptAnnotation) => {

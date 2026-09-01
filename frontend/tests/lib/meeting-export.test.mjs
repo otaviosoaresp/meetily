@@ -33,7 +33,7 @@ vm.runInNewContext(compiled, {
   btoa: value => Buffer.from(value, 'binary').toString('base64'),
 });
 
-const { buildMeetingMarkdown, markdownToExportHtml } = cjsModule.exports;
+const { buildMeetingMarkdown, markdownToPdfDefinition } = cjsModule.exports;
 const markdown = buildMeetingMarkdown({
   title: 'Planning & Review',
   date: 'August 31, 2026',
@@ -54,7 +54,12 @@ assert.ok(markdown.indexOf('[00:04] Você: We reviewed the plan.') < markdown.in
 assert.ok(markdown.indexOf('[00:06] Note: Confirm the PDF layout.') < markdown.indexOf('[00:12] Outros: The follow-up starts now.'));
 assert.match(markdown, /!\[Whiteboard \[00:14\]\]\(data:image\/png;base64,iVBORw==\)/);
 
-const html = markdownToExportHtml('| Owner | Status |\n| --- | --- |\n| Captain | Ready |');
-assert.match(html, /<table>[\s\S]*<th>Owner<\/th>[\s\S]*<td>Ready<\/td>[\s\S]*<\/table>/);
+const pdfDefinition = markdownToPdfDefinition(`${markdown}\n\n| Owner | Status |\n| --- | --- |\n| Captain | Ready |`);
+const table = pdfDefinition.content.find(node => node.table);
+assert.ok(table, 'PDF definition should contain a native table node');
+assert.equal(table.table.headerRows, 1);
+assert.deepEqual(table.table.body[0].map(cell => cell.text[0].text), ['Owner', 'Status']);
+assert.deepEqual(table.table.body[1].map(cell => cell.text[0].text), ['Captain', 'Ready']);
+assert.ok(JSON.stringify(pdfDefinition).includes('data:image/png;base64,iVBORw=='));
 
 console.log('meeting export tests passed');

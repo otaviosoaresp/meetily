@@ -56,9 +56,9 @@ function inlineToPdfContent(tokens: MarkedToken[] = [], inherited: Record<string
           ? inlineToPdfContent(token.tokens, { ...inherited, color: '#2563eb', decoration: 'underline' })
           : [];
       case 'image':
-        return token.href?.startsWith('data:')
-          ? [{ image: token.href, width: 480, margin: [0, 4, 0, 8] }]
-          : [{ text: token.text || 'Image unavailable', ...inherited }];
+        return token.href && /^data:image\/(?:png|jpe?g);base64,/i.test(token.href)
+          ? [{ image: token.href, fit: [480, 700], margin: [0, 4, 0, 8] }]
+          : [{ text: token.text ? `${token.text} (Image unavailable)` : 'Image unavailable', ...inherited }];
       case 'br':
         return [{ text: '\n', ...inherited }];
       case 'text':
@@ -94,6 +94,8 @@ function tokenToPdfContent(token: MarkedToken): Record<string, unknown>[] {
       return [inlineBlock(token.tokens || [{ type: 'text', text: token.text || '' }], `heading${token.depth || 1}`)];
     case 'paragraph':
       return [inlineBlock(token.tokens || [{ type: 'text', text: token.text || '' }], 'paragraph')];
+    case 'text':
+      return [inlineBlock(token.tokens || [{ type: 'text', text: token.text || '' }], 'paragraph')];
     case 'list':
       return [{
         [token.ordered ? 'ol' : 'ul']: (token.items || []).map(listItemToPdfContent),
@@ -122,6 +124,7 @@ function tokenToPdfContent(token: MarkedToken): Record<string, unknown>[] {
     case 'space':
       return [];
     default:
+      if (token.tokens) return [inlineBlock(token.tokens, 'paragraph')];
       return token.text || token.raw ? [{ text: token.text || token.raw || '', style: 'paragraph' }] : [];
   }
 }

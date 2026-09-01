@@ -62,4 +62,29 @@ assert.deepEqual(table.table.body[0].map(cell => cell.text[0].text), ['Owner', '
 assert.deepEqual(table.table.body[1].map(cell => cell.text[0].text), ['Captain', 'Ready']);
 assert.ok(JSON.stringify(pdfDefinition).includes('data:image/png;base64,iVBORw=='));
 
+const listDefinition = markdownToPdfDefinition('- **Owner:** Captain decided to ship\n- See `ops-oncall` and [the doc](https://example.com)');
+const list = listDefinition.content.find(node => node.ul);
+assert.ok(list, 'PDF definition should contain a native unordered list');
+assert.ok(Array.isArray(list.ul[0].text), 'list item should preserve inline token content');
+assert.equal(list.ul[0].text[0].text, 'Owner:');
+assert.equal(list.ul[0].text[0].bold, true);
+assert.equal(list.ul[0].text[1].text, ' Captain decided to ship');
+
+const unsupportedImageDefinition = markdownToPdfDefinition('![WebP](data:image/webp;base64,UklGRg==)');
+assert.match(JSON.stringify(unsupportedImageDefinition), /Image unavailable/);
+assert.equal(JSON.stringify(unsupportedImageDefinition).includes('"image"'), false);
+
+const validPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const imageDefinition = markdownToPdfDefinition(`![Tall screenshot](${validPng})`);
+const imageNode = imageDefinition.content[0].stack.find(node => node.image);
+assert.equal(imageNode.fit[0], 480);
+assert.equal(imageNode.fit[1], 700);
+
+const pdfMake = requireModule('pdfmake/build/pdfmake');
+const pdfFonts = requireModule('pdfmake/build/vfs_fonts');
+pdfMake.addVirtualFileSystem(pdfFonts);
+pdfMake.addFonts({ 'Roboto Mono': { normal: 'Roboto-Regular.ttf' } });
+const pdfBuffer = await pdfMake.createPdf(markdownToPdfDefinition(`![Screenshot](${validPng})\n\n![WebP](data:image/webp;base64,UklGRg==)`)).getBuffer();
+assert.ok(pdfBuffer.length > 0, 'unsupported image formats should not abort PDF generation');
+
 console.log('meeting export tests passed');

@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+
+const requireModule = createRequire(import.meta.url);
 
 const modulePath = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -24,12 +27,13 @@ vm.runInNewContext(compiled, {
           `data:${mime};base64,${Buffer.from(Uint8Array.from(imageData)).toString('base64')}`,
       };
     }
+    if (moduleName === 'marked') return requireModule('marked');
     throw new Error(`Unexpected module: ${moduleName}`);
   },
   btoa: value => Buffer.from(value, 'binary').toString('base64'),
 });
 
-const { buildMeetingMarkdown } = cjsModule.exports;
+const { buildMeetingMarkdown, markdownToExportHtml } = cjsModule.exports;
 const markdown = buildMeetingMarkdown({
   title: 'Planning & Review',
   date: 'August 31, 2026',
@@ -49,5 +53,8 @@ assert.match(markdown, /## AI Summary\n\nThe team agreed to ship the export flow
 assert.ok(markdown.indexOf('[00:04] Você: We reviewed the plan.') < markdown.indexOf('[00:06] Note: Confirm the PDF layout.'));
 assert.ok(markdown.indexOf('[00:06] Note: Confirm the PDF layout.') < markdown.indexOf('[00:12] Outros: The follow-up starts now.'));
 assert.match(markdown, /!\[Whiteboard \[00:14\]\]\(data:image\/png;base64,iVBORw==\)/);
+
+const html = markdownToExportHtml('| Owner | Status |\n| --- | --- |\n| Captain | Ready |');
+assert.match(html, /<table>[\s\S]*<th>Owner<\/th>[\s\S]*<td>Ready<\/td>[\s\S]*<\/table>/);
 
 console.log('meeting export tests passed');

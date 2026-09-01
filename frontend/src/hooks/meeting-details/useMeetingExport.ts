@@ -3,12 +3,12 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import type { jsPDF } from 'jspdf';
 import type { Summary, Transcript, TranscriptAnnotation } from '@/types';
 import type { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import {
   buildMeetingMarkdown,
   getExportImageDataUrl,
+  markdownToExportHtml,
   type ExportAnnotation,
 } from '@/lib/meeting-export';
 
@@ -54,79 +54,64 @@ function legacySummaryToMarkdown(summary: Summary): string {
     .join('\n\n');
 }
 
-function markdownText(line: string): string {
-  return line
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/^>\s?/, '')
-    .replace(/^[-*+]\s+/, '• ')
-    .replace(/!\[.*\]\(.*\)/, '')
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
-    .replace(/`([^`]+)`/g, '$1');
-}
-
-function addPdfText(doc: jsPDF, text: string, state: { y: number }, size: number, bold: boolean) {
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 40;
-  const lineHeight = size * 1.35;
-  const lines = doc.splitTextToSize(text, pageWidth - margin * 2);
-
-  doc.setFont('helvetica', bold ? 'bold' : 'normal');
-  doc.setFontSize(size);
-  for (const line of lines) {
-    if (state.y + lineHeight > pageHeight - margin) {
-      doc.addPage();
-      state.y = margin;
-    }
-    doc.text(line, margin, state.y);
-    state.y += lineHeight;
-  }
-}
-
 async function renderMarkdownPdf(markdown: string): Promise<Uint8Array> {
   const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  const state = { y: 48 };
-  const margin = 40;
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
+  const container = document.createElement('div');
+  container.innerHTML = `<style>
+    body { font-family: Arial, sans-serif; color: #1f2937; }
+    h1 { font-size: 24px; margin: 0 0 16px; }
+    h2 { font-size: 18px; margin: 20px 0 10px; }
+    h3, h4, h5, h6 { margin: 14px 0 8px; }
+    p, li { font-size: 11px; line-height: 1.45; }
+    ul, ol { margin: 6px 0 10px; padding-left: 22px; }
+    blockquote { border-left: 3px solid #cbd5e1; margin: 8px 0; padding-left: 10px; color: #475569; }
+    pre { background: #f1f5f9; padding: 8px; white-space: pre-wrap; }
+    code { font-family: monospace; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0 14px; font-size: 10px; }
+    th, td { border: 1px solid #94a3b8; padding: 5px 7px; text-align: left; vertical-align: top; }
+    th { background: #e2e8f0; font-weight: 700; }
+    img { display: block; max-width: 100%; height: auto; margin: 8px 0 12px; }
+  </style>${markdownToExportHtml(markdown)}`;
+  container.style.position = 'absolute';
+  container.style.left = '-100000px';
+  container.style.top = '0';
+  container.style.width = '760px';
+  container.style.backgroundColor = '#ffffff';
+  document.body.appendChild(container);
 
-  for (const line of markdown.split('\n')) {
-    if (!line.trim()) {
-      state.y += 8;
-      continue;
-    }
+  try {
+    await Promise.all(Array.from(container.querySelectorAll('img')).map(image => {
+      if (image.complete) return Promise.resolve();
+      return new Promise<void>(resolve => {
+        image.addEventListener('load', () => resolve(), { once: true });
+        image.addEventListener('error', () => resolve(), { once: true });
+      });
+    }));
 
-    const imageStart = line.indexOf('![');
-    const imageEnd = line.indexOf('](', imageStart + 2);
-    if (imageStart === 0 && imageEnd > 0 && line.endsWith(')')) {
-      const dataUrl = line.slice(imageEnd + 2, -1);
+    await new Promise<void>((resolve, reject) => {
       try {
-        const properties = doc.getImageProperties(dataUrl);
-        const maxWidth = pageWidth - margin * 2;
-        const maxHeight = pageHeight - margin * 2 - 24;
-        const ratio = properties.width / properties.height || 1;
-        const width = Math.min(maxWidth, maxHeight * ratio);
-        const height = width / ratio;
-        if (state.y + height > pageHeight - margin) {
-          doc.addPage();
-          state.y = margin;
-        }
-        const format = dataUrl.slice(5, dataUrl.indexOf(';')).split('/')[1].toUpperCase();
-        doc.addImage(dataUrl, format === 'JPG' ? 'JPEG' : format, margin, state.y, width, height);
-        state.y += height + 12;
-        continue;
+        doc.html(container, {
+          callback: () => resolve(),
+          margin: [40, 40, 40, 40],
+          autoPaging: 'text',
+          width: 515,
+          windowWidth: 760,
+          html2canvas: {
+            backgroundColor: '#ffffff',
+            useCORS: false,
+            allowTaint: false,
+            scale: 1,
+          },
+        });
       } catch (error) {
-        console.warn('Failed to add an exported annotation image to PDF:', error);
+        reject(error);
       }
-    }
-
-    const heading = line.match(/^(#{1,3})\s+/);
-    addPdfText(doc, markdownText(line), state, heading ? (heading[1].length === 1 ? 18 : 14) : 10, Boolean(heading));
+    });
+    return new Uint8Array(doc.output('arraybuffer'));
+  } finally {
+    container.remove();
   }
-
-  return new Uint8Array(doc.output('arraybuffer'));
 }
 
 export function useMeetingExport({

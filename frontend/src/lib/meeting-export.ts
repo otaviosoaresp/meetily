@@ -1,4 +1,5 @@
 import { imageDataToDataUrl } from '@/lib/transcript-annotation-input';
+import { marked } from 'marked';
 import type { Transcript, TranscriptAnnotation } from '@/types';
 
 export interface MeetingExportInput {
@@ -17,6 +18,11 @@ export type ExportAnnotation = TranscriptAnnotation & {
 export type MeetingExportEvent =
   | { kind: 'segment'; time: number; segment: Transcript }
   | { kind: 'annotation'; time: number; annotation: ExportAnnotation };
+
+/** Convert export Markdown to GFM HTML for rich PDF rendering. */
+export function markdownToExportHtml(markdown: string): string {
+  return marked.parse(markdown, { gfm: true, headerIds: false, mangle: false });
+}
 
 function timestamp(seconds: number | undefined): string {
   if (seconds === undefined || !Number.isFinite(seconds)) return '[--:--]';
